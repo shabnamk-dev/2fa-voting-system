@@ -1,0 +1,5 @@
+Flask>=3.0
+Werkzeug>=3.0
+pyotp>=2.9
+qrcode[pil]>=7.4
+pytest>=8.0
