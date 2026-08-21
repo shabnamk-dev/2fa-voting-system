@@ -48,19 +48,10 @@ export const initializeMockDatabase = () => {
   if (!localStorage.getItem("avp_candidates")) {
     setLocalStorage("avp_candidates", DEFAULT_CANDIDATES);
   }
-  if (!localStorage.getItem("avp_security_events")) {
-    setLocalStorage("avp_security_events", DEFAULT_SECURITY_EVENTS);
-  }
   if (!localStorage.getItem("avp_users")) {
     setLocalStorage("avp_users", [
       { studentId: "90210", email: "student@university.edu", password: "password123", role: "student", is2faSetup: true, hasVoted: false },
       { studentId: "admin", email: "admin@university.edu", password: "admin", role: "admin", is2faSetup: true }
-    ]);
-  }
-  if (!localStorage.getItem("avp_audit_logs")) {
-    setLocalStorage("avp_audit_logs", [
-      { timestamp: "2026-10-25 10:42:15 UTC", action: "Secure Login Initiated", ip: "192.168.1.45", status: "SUCCESS" },
-      { timestamp: "2026-10-22 14:10:05 UTC", action: "Ballot Cast: Referendum", ip: "192.168.1.45", status: "SUCCESS" }
     ]);
   }
 };
@@ -160,47 +151,12 @@ export const mockApi = {
       setLocalStorage("avp_candidates", candidates);
     }
 
-    // 3. Log audit action
-    const logs = getLocalStorage("avp_audit_logs", []);
-    const newLog = {
-      timestamp: new Date().toISOString().replace("T", " ").substring(0, 19) + " UTC",
-      action: "Ballot Cast: Student General Secretary",
-      ip: "192.168.1.45",
-      status: "SUCCESS"
-    };
-    logs.unshift(newLog);
-    setLocalStorage("avp_audit_logs", logs);
-
-    // 4. Generate transaction receipt
+    // 3. Generate transaction receipt
     const txHash = Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
     return {
       txHash,
       timestamp: new Date().toISOString(),
       electionId: "ELC-2026-SYS-BETA"
     };
-  },
-
-  getSecurityEvents: () => {
-    initializeMockDatabase();
-    return getLocalStorage("avp_security_events", []);
-  },
-
-  getAuditLogs: () => {
-    initializeMockDatabase();
-    return getLocalStorage("avp_audit_logs", []);
-  },
-
-  addSecurityEvent: (event, ip, level) => {
-    initializeMockDatabase();
-    const events = getLocalStorage("avp_security_events", []);
-    const newEvent = {
-      timestamp: new Date().toISOString().replace("T", " ").substring(0, 19),
-      event,
-      ip,
-      level
-    };
-    events.unshift(newEvent);
-    setLocalStorage("avp_security_events", events);
-    return newEvent;
   }
 };
