@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { mockApi } from "../../services/mockApi";
+import { login as apiLogin } from "../../services/api";
 
 export default function Login({ onLoginSuccess }) {
   const navigate = useNavigate();
@@ -8,23 +8,21 @@ export default function Login({ onLoginSuccess }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     try {
-      const user = mockApi.login(studentId, password);
-      onLoginSuccess(user);
-      if (user.role === "admin") {
-        navigate("/admin");
+      const res = await apiLogin(studentId, password);
+      const nextStep = res.data?.data?.next;
+      if (nextStep === "setup-2fa") {
+        navigate("/2fa-setup");
+      } else if (nextStep === "verify-totp") {
+        navigate("/otp-verify");
       } else {
-        if (!user.is2faSetup) {
-          navigate("/2fa-setup");
-        } else {
-          navigate("/otp-verify");
-        }
+        navigate("/dashboard");
       }
     } catch (err) {
-      setError(err.message || "Authentication failed.");
+      setError(err.response?.data?.message || err.message || "Authentication failed.");
     }
   };
 

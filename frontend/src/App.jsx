@@ -22,9 +22,10 @@ import VoteSubmitted from "./pages/voter/VoteSubmitted";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import Results from "./pages/admin/Results";
 
-
-// API / Mock Data Init
 import { initializeMockDatabase } from "./services/mockApi";
+
+
+import { getMe, logout as apiLogout } from "./services/api";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -33,12 +34,30 @@ export default function App() {
 
   useEffect(() => {
     initializeMockDatabase();
-    
-    // Check if session exists in sessionStorage
-    const storedUser = sessionStorage.getItem("avp_user_session");
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-    }
+
+    const checkSession = async () => {
+      try {
+        const res = await getMe();
+        const meData = res.data?.data;
+        if (meData) {
+          setUser({
+            studentId: meData.username,
+            username: meData.username,
+            role: meData.role === "voter" ? "student" : meData.role,
+            hasVoted: meData.has_voted,
+          });
+          return;
+        }
+      } catch (err) {
+        // Fallback to local session if backend session doesn't exist
+      }
+      const storedUser = sessionStorage.getItem("avp_user_session");
+      if (storedUser) {
+        setUser(JSON.parse(storedUser));
+      }
+    };
+
+    checkSession();
   }, []);
 
   const handleLoginSuccess = (loggedInUser) => {
@@ -46,7 +65,12 @@ export default function App() {
     sessionStorage.setItem("avp_user_session", JSON.stringify(loggedInUser));
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await apiLogout();
+    } catch (err) {
+      // Ignore logout API failure
+    }
     setUser(null);
     setSelectedCandidate(null);
     setReceipt(null);
@@ -70,92 +94,92 @@ export default function App() {
         <Navbar user={user} onLogout={handleLogout} />
 
         <div className="flex flex-1 flex-col">
-            <Routes>
-              {/* Public Routes */}
-              <Route 
-                path="/login" 
-                element={
-                  !user ? <Login onLoginSuccess={handleLoginSuccess} /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
-                } 
-              />
-              <Route 
-                path="/register" 
-                element={
-                  !user ? <Register onLoginSuccess={handleLoginSuccess} /> : <Navigate to="/2fa-setup" replace />
-                } 
-              />
+          <Routes>
+            {/* Public Routes */}
+            <Route
+              path="/login"
+              element={
+                !user ? <Login onLoginSuccess={handleLoginSuccess} /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
+              }
+            />
+            <Route
+              path="/register"
+              element={
+                !user ? <Register onLoginSuccess={handleLoginSuccess} /> : <Navigate to="/2fa-setup" replace />
+              }
+            />
 
-              {/* Auth Setup / Verification Routes */}
-              <Route 
-                path="/2fa-setup" 
-                element={<TwoFactorSetup user={user} on2faSuccess={handleLoginSuccess} />} 
-              />
-              <Route 
-                path="/otp-verify" 
-                element={<OTPVerify user={user} onOtpSuccess={() => {}} />} 
-              />
+            {/* Auth Setup / Verification Routes */}
+            <Route
+              path="/2fa-setup"
+              element={<TwoFactorSetup user={user} on2faSuccess={handleLoginSuccess} />}
+            />
+            <Route
+              path="/otp-verify"
+              element={<OTPVerify user={user} onOtpSuccess={handleLoginSuccess} />}
+            />
 
-              {/* Voter Protected Routes */}
-              <Route 
-                path="/dashboard" 
-                element={
-                  user && user.role === "student" 
-                    ? <VoterDashboard user={user} /> 
-                    : <Navigate to="/login" replace />
-                } 
-              />
-              <Route 
-                path="/ballot" 
-                element={
-                  user && user.role === "student" 
-                    ? <Candidates selectedCandidate={selectedCandidate} onSelectCandidate={setSelectedCandidate} /> 
-                    : <Navigate to="/login" replace />
-                } 
-              />
-              <Route 
-                path="/confirm-vote" 
-                element={
-                  user && user.role === "student" 
-                    ? <VoteConfirm user={user} selectedCandidate={selectedCandidate} onVoteCompleted={(r) => { setReceipt(r); setUser({...user, hasVoted: true}); }} /> 
-                    : <Navigate to="/login" replace />
-                } 
-              />
-              <Route 
-                path="/receipt" 
-                element={
-                  user && user.role === "student" 
-                    ? <VoteSubmitted receipt={receipt} onResetBallot={() => { setSelectedCandidate(null); setReceipt(null); }} /> 
-                    : <Navigate to="/login" replace />
-                } 
-              />
+            {/* Voter Protected Routes */}
+            <Route
+              path="/dashboard"
+              element={
+                user && user.role === "student"
+                  ? <VoterDashboard user={user} />
+                  : <Navigate to="/login" replace />
+              }
+            />
+            <Route
+              path="/ballot"
+              element={
+                user && user.role === "student"
+                  ? <Candidates selectedCandidate={selectedCandidate} onSelectCandidate={setSelectedCandidate} />
+                  : <Navigate to="/login" replace />
+              }
+            />
+            <Route
+              path="/confirm-vote"
+              element={
+                user && user.role === "student"
+                  ? <VoteConfirm user={user} selectedCandidate={selectedCandidate} onVoteCompleted={(r) => { setReceipt(r); setUser({ ...user, hasVoted: true }); }} />
+                  : <Navigate to="/login" replace />
+              }
+            />
+            <Route
+              path="/receipt"
+              element={
+                user && user.role === "student"
+                  ? <VoteSubmitted receipt={receipt} onResetBallot={() => { setSelectedCandidate(null); setReceipt(null); }} />
+                  : <Navigate to="/login" replace />
+              }
+            />
 
-              {/* General Protected Results Route */}
-              <Route 
-                path="/results" 
-                element={
-                  user 
-                    ? <Results /> 
-                    : <Navigate to="/login" replace />
-                } 
-              />
+            {/* General Protected Results Route */}
+            <Route
+              path="/results"
+              element={
+                user
+                  ? <Results />
+                  : <Navigate to="/login" replace />
+              }
+            />
 
-              {/* Admin Protected Routes */}
-              <Route 
-                path="/admin" 
-                element={
-                  user && user.role === "admin" 
-                    ? <AdminDashboard /> 
-                    : <Navigate to="/login" replace />
-                } 
-              />
+            {/* Admin Protected Routes */}
+            <Route
+              path="/admin"
+              element={
+                user && user.role === "admin"
+                  ? <AdminDashboard />
+                  : <Navigate to="/login" replace />
+              }
+            />
 
-              {/* Default Redirect */}
-              <Route 
-                path="*" 
-                element={<Navigate to={user ? (user.role === "admin" ? "/admin" : "/dashboard") : "/login"} replace />} 
-              />
-            </Routes>
-          </div>
+            {/* Default Redirect */}
+            <Route
+              path="*"
+              element={<Navigate to={user ? (user.role === "admin" ? "/admin" : "/dashboard") : "/register"} replace />}
+            />
+          </Routes>
+        </div>
       </div>
     </Router>
   );

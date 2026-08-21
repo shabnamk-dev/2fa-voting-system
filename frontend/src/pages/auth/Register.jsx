@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { mockApi } from "../../services/mockApi";
+import { register as apiRegister } from "../../services/api";
 
 export default function Register({ onLoginSuccess }) {
   const navigate = useNavigate();
@@ -11,22 +11,19 @@ export default function Register({ onLoginSuccess }) {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
     setSuccess("");
 
-
-
     try {
-      const user = mockApi.register(studentId, email, password);
-      setSuccess("Registration successful! Initiating security setup...");
+      await apiRegister(studentId, password);
+      setSuccess("Registration successful! Redirecting to login...");
       setTimeout(() => {
-        onLoginSuccess(user);
-        navigate("/2fa-setup");
+        navigate("/login");
       }, 1500);
     } catch (err) {
-      setError(err.message || "Registration failed.");
+      setError(err.response?.data?.message || err.message || "Registration failed.");
     }
   };
 
@@ -68,7 +65,7 @@ export default function Register({ onLoginSuccess }) {
               className="w-full input-institutional p-3 font-body-md text-body-md focus:ring-1 focus:ring-primary"
               id="student-id"
               name="student_id"
-              placeholder="Enter your 8-digit ID"
+              placeholder="Enter your ID"
               required
               type="text"
               value={studentId}
@@ -109,7 +106,7 @@ export default function Register({ onLoginSuccess }) {
               onChange={(e) => setPassword(e.target.value)}
             />
             <p className="font-label-md text-label-md text-text-secondary mt-2">
-              Must be at least 12 characters, including uppercase, lowercase, numbers, and symbols.
+              Must be at least 8 characters, including at least one uppercase, lowercase, numbers, and symbols.
             </p>
           </div>
 

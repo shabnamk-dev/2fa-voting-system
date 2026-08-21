@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { verifyTOTP, getMe } from "../../services/api";
 
 export default function OTPVerify({ user, onOtpSuccess }) {
   const navigate = useNavigate();
@@ -69,7 +70,7 @@ export default function OTPVerify({ user, onOtpSuccess }) {
     }
   };
 
-  const handleVerify = (e) => {
+  const handleVerify = async (e) => {
     if (e) e.preventDefault();
     setError("");
 
@@ -79,16 +80,26 @@ export default function OTPVerify({ user, onOtpSuccess }) {
       return;
     }
 
-    // Mock validation: accept any code for prototype, or we can check if they input all digits.
-    if (user) {
-      onOtpSuccess();
-      if (user.role === "admin") {
-        navigate("/admin");
-      } else {
-        navigate("/dashboard");
+    try {
+      await verifyTOTP(code);
+      const userRes = await getMe();
+      const meData = userRes.data?.data;
+      if (meData) {
+        const loggedInUser = {
+          studentId: meData.username,
+          username: meData.username,
+          role: meData.role === "voter" ? "student" : meData.role,
+          hasVoted: meData.has_voted,
+        };
+        onOtpSuccess(loggedInUser);
+        if (loggedInUser.role === "admin") {
+          navigate("/admin");
+        } else {
+          navigate("/dashboard");
+        }
       }
-    } else {
-      navigate("/login");
+    } catch (err) {
+      setError(err.response?.data?.message || err.message || "Invalid authentication code.");
     }
   };
 

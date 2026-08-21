@@ -1,11 +1,12 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { mockApi } from "../../services/mockApi";
+import { getSetup2FA, confirmSetup2FA } from "../../services/api";
 
 export default function TwoFactorSetup({ user, on2faSuccess }) {
   const navigate = useNavigate();
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
+  const [qrCode, setQrCode] = useState("");
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -14,7 +15,21 @@ export default function TwoFactorSetup({ user, on2faSuccess }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleActivate = (e) => {
+  useEffect(() => {
+    const fetchSetup = async () => {
+      try {
+        const res = await getSetup2FA();
+        if (res.data?.data?.qr_code) {
+          setQrCode(res.data.data.qr_code);
+        }
+      } catch (err) {
+        setError("Failed to load 2FA setup details. Please log in again.");
+      }
+    };
+    fetchSetup();
+  }, []);
+
+  const handleActivate = async (e) => {
     e.preventDefault();
     setError("");
 
@@ -24,15 +39,10 @@ export default function TwoFactorSetup({ user, on2faSuccess }) {
     }
 
     try {
-      if (user) {
-        const updatedUser = mockApi.setup2fa(user.studentId);
-        on2faSuccess(updatedUser);
-        navigate("/otp-verify");
-      } else {
-        navigate("/login");
-      }
+      await confirmSetup2FA(code);
+      navigate("/login");
     } catch (err) {
-      setError(err.message || "Failed to setup 2FA.");
+      setError(err.response?.data?.message || err.message || "Failed to setup 2FA.");
     }
   };
 
@@ -75,11 +85,17 @@ export default function TwoFactorSetup({ user, on2faSuccess }) {
                 Scan Code
               </span>
               <div className="border-4 border-primary p-4 bg-white">
-                <img
-                  className="w-48 h-48 object-cover"
-                  alt="A high-contrast, stark black and white digital representation of a functional QR code. The geometric patterns are sharply defined, evoking a sense of institutional security and cryptographic verification. The aesthetic is brutalist, clean, and utilitarian, perfectly suited for a formal authentication interface in a light-mode setting."
-                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuCNMqH-Mw0R6unqvAYQfl8muGYBAbFs3OQ5OHuIncvaRYC7f7DT93aCSflkg-ATPIfaHUeBEq-P8SF8HAd9J6S0niiJM4vkJcwi5R8SFEeBR3CgIXL0Udu4ZSJoOOp2ZubovlV9hbzA3eQvFlAlkLzalF5y1uI1JIcUNg6QDItNJyw4HIDCVshy1YPkix-VWTOujWsMjgK6Uyox_RS1KZMp7Ibb3Qe2qfJYPP9YAY7m0M0AHXZl30oGEQ"
-                />
+                {qrCode ? (
+                  <img
+                    className="w-48 h-48 object-cover"
+                    alt="2FA QR Code"
+                    src={qrCode}
+                  />
+                ) : (
+                  <div className="w-48 h-48 flex items-center justify-center text-sm text-text-secondary">
+                    Loading QR...
+                  </div>
+                )}
               </div>
             </div>
 
