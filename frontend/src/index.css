@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Utilities for Institutional Utilitarian Design System */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  display: inline-block;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: normal;
+  word-wrap: normal;
+  white-space: nowrap;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'liga';
+}
+
+/* Global inputs hide spinners */
+input[type=number]::-webkit-inner-spin-button, 
+input[type=number]::-webkit-outer-spin-button { 
+    -webkit-appearance: none; 
+    margin: 0; 
+}
+input[type=number] {
+    -moz-appearance: textfield;
+}
+
+.border-institutional {
+  border: 1px solid #76777d;
+}
+
+.input-institutional {
+  border: 1px solid #76777d;
+  border-radius: 0px !important;
+  background-color: #ffffff;
+  box-shadow: none !important;
+}
+
+.input-institutional:focus {
+  outline: none !important;
+  border: 1.5px solid #000000 !important;
+  box-shadow: none !important;
+}
+
+.btn-institutional {
+  background-color: #000000;
+  color: #ffffff;
+  border-radius: 0px !important;
+  border: 1px solid #000000;
+  transition: none !important;
+}
+
+.btn-institutional:hover {
+  background-color: #1b1b1d;
+}
