@@ -19,6 +19,13 @@ app = Flask(__name__)
 # Secret key for Flask sessions
 app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
 
+app.config.update(
+    SESSION_COOKIE_HTTPONLY = True,
+    SESSION_COOKIE_SAMESITE = "Lax",
+
+    SESSION_COOKIE_SECURE = False
+)
+
 # Allow React frontend to communicate with Flask
 CORS(app, supports_credentials=True)
 
@@ -346,7 +353,12 @@ def confirm_2fa():
 
     data = request.get_json() or {}
 
-    token = data.get("token", "").strip()
+    token = str(data.get("token", "")).strip()
+
+    if not token.isdigit() or len(token)!=6:
+        return error(
+            "OTP must be a 6-digit code.", 400
+        )
 
     user = db.get_user_by_id(user_id)
 
@@ -406,7 +418,12 @@ def verify_totp():
 
     data = request.get_json() or {}
 
-    token = data.get("token", "").strip()
+    token = str(data.get("token", "")).strip()
+    
+    if not token.isdigit() or len(token)!=6:
+        return error(
+            "OTP must be a 6-digit code.", 400
+        )
 
     user = db.get_user_by_id(user_id)
 
@@ -469,6 +486,13 @@ def current_user():
         session["user_id"]
     )
 
+    if not user:
+        session.clear()
+
+        return error(
+            "User session is no longer valid.", 401
+        )
+
     return success(
         "Current user.",
         {
@@ -517,6 +541,13 @@ def dashboard():
     user = db.get_user_by_id(
         session["user_id"]
     )
+    if not user:
+        session.clear()
+
+        return error(
+            "User session is no longer valid.", 401
+        )
+
 
     return success(
         "Dashboard information.",
