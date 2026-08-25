@@ -1,33 +1,24 @@
-
-
 ## How to run
 
 ### Backend
 
-```bash
 cd backend
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 python3 seed_admin.py             # create your first admin account
 python3 app.py                    # starts on http://localhost:5000
-```
 
-The SQLite file `voting_system.db` is created automatically on first run.
-**If you already have an existing `voting_system.db` from before**, don't
-delete it — `database.py` now safely migrates the old `votes` table shape to
-the new one (adds receipt codes + abstain support) and preserves your data.
-This happens automatically the first time you start the updated backend.
 
 ### Frontend
 
 Drop the contents of `frontend/src` into your existing `src/` folder,
 overwriting the files listed below. Then, as usual:
 
-```bash
+
 npm install
 npm run dev
-```
+
 
 Make sure `axios` and `react-router-dom` are in your `package.json` — the
 backend expects requests from `http://localhost:5173` (Vite's default) or
@@ -105,19 +96,4 @@ CORS origin in `app.py`.
 - Fixed a couple of lowercase `maxlength` JSX attributes (should be
   `maxLength`) that React was silently ignoring.
 
-## Testing performed
 
-I ran a full simulated flow against the actual Flask app (register → 2FA
-setup → login → TOTP verify → candidate CRUD → cast vote → duplicate-vote
-rejection → abstain vote → results tally → close election → account
-lockout after 5 failed attempts → admin security stats/events → 403 on a
-voter hitting an admin-only route) — all passing. I also simulated an
-old-format database to confirm the migration preserves existing data.
-
-I was not able to run the actual `npm install`/Vite dev server in this
-environment (no network access to npm here), so I verified every `.jsx`
-file with `esbuild` for syntax correctness and confirmed `App.jsx`'s full
-import graph resolves and bundles cleanly. I'd still recommend doing a
-normal `npm run dev` smoke test on your machine before considering this
-final — I'm confident in the logic, but a real browser render is the last
-mile I couldn't personally walk here.
