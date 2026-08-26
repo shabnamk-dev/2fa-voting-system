@@ -31,14 +31,14 @@ export default function Navbar({ user, onLogout }) {
                 <>
                   <Link
                     to="/dashboard"
-                    className={`pb-3 border-b-2 transition-none text-body-md ${isVotingActive() ? "border-on-primary text-on-primary font-bold" : "border-transparent text-on-primary-container opacity-80 hover:opacity-100"
+                    className={`pb-3 border-b-2 transition-none text-body-md ${isVotingActive() ? "border-on-primary text-on-primary font-bold" : "border-transparent text-slate-300 hover:text-white font-medium"
                       }`}
                   >
                     Voting
                   </Link>
                   <Link
                     to="/results"
-                    className={`pb-3 border-b-2 transition-none text-body-md ${isActive("/results") ? "border-on-primary text-on-primary font-bold" : "border-transparent text-on-primary-container opacity-80 hover:opacity-100"
+                    className={`pb-3 border-b-2 transition-none text-body-md ${isActive("/results") ? "border-on-primary text-on-primary font-bold" : "border-transparent text-slate-300 hover:text-white font-medium"
                       }`}
                   >
                     Results
@@ -48,14 +48,14 @@ export default function Navbar({ user, onLogout }) {
                 <>
                   <Link
                     to="/admin"
-                    className={`pb-3 border-b-2 transition-none text-body-md ${isActive("/admin") ? "border-on-primary text-on-primary font-bold" : "border-transparent text-on-primary-container opacity-80 hover:opacity-100"
+                    className={`pb-3 border-b-2 transition-none text-body-md ${isActive("/admin") ? "border-on-primary text-on-primary font-bold" : "border-transparent text-slate-300 hover:text-white font-medium"
                       }`}
                   >
                     Candidates
                   </Link>
                   <Link
                     to="/results"
-                    className={`pb-3 border-b-2 transition-none text-body-md ${isActive("/results") ? "border-on-primary text-on-primary font-bold" : "border-transparent text-on-primary-container opacity-80 hover:opacity-100"
+                    className={`pb-3 border-b-2 transition-none text-body-md ${isActive("/results") ? "border-on-primary text-on-primary font-bold" : "border-transparent text-slate-300 hover:text-white font-medium"
                       }`}
                   >
                     Results
