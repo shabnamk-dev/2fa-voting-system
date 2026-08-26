@@ -2,11 +2,11 @@ import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { register as apiRegister } from "../../services/api";
 
-export default function Register({ onLoginSuccess }) {
+export default function Register() {
   const navigate = useNavigate();
   const [studentId, setStudentId] = useState("");
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -16,8 +16,23 @@ export default function Register({ onLoginSuccess }) {
     setError("");
     setSuccess("");
 
+    if (studentId.trim().length < 3) {
+      setError("Student ID must be at least 3 characters.");
+      return;
+    }
+
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
     try {
-      await apiRegister(studentId, password);
+      await apiRegister(studentId.trim(), password);
       setSuccess("Registration successful! Redirecting to login...");
       setTimeout(() => {
         navigate("/login");
@@ -73,23 +88,6 @@ export default function Register({ onLoginSuccess }) {
             />
           </div>
 
-          {/* University Email */}
-          <div>
-            <label className="block font-label-lg text-label-lg text-primary mb-stack-sm uppercase" htmlFor="email">
-              UNIVERSITY EMAIL
-            </label>
-            <input
-              className="w-full input-institutional p-3 font-body-md text-body-md focus:ring-1 focus:ring-primary"
-              id="email"
-              name="email"
-              placeholder="student@university.edu"
-              required
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-
           {/* Password */}
           <div>
             <label className="block font-label-lg text-label-lg text-primary mb-stack-sm uppercase" htmlFor="password">
@@ -106,11 +104,26 @@ export default function Register({ onLoginSuccess }) {
               onChange={(e) => setPassword(e.target.value)}
             />
             <p className="font-label-md text-label-md text-text-secondary mt-2">
-              Must be at least 8 characters, including at least one uppercase, lowercase, numbers, and symbols.
+              Must be at least 8 characters.
             </p>
           </div>
 
-
+          {/* Confirm Password */}
+          <div>
+            <label className="block font-label-lg text-label-lg text-primary mb-stack-sm uppercase" htmlFor="confirm-password">
+              CONFIRM PASSWORD
+            </label>
+            <input
+              className="w-full input-institutional p-3 font-body-md text-body-md focus:ring-1 focus:ring-primary"
+              id="confirm-password"
+              name="confirm_password"
+              placeholder="Re-enter your password"
+              required
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+            />
+          </div>
 
           {/* Submit Button */}
           <div className="pt-stack-md">

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { verifyTOTP, getMe } from "../../services/api";
 
-export default function OTPVerify({ user, onOtpSuccess }) {
+export default function OTPVerify({ onOtpSuccess }) {
   const navigate = useNavigate();
   const [digits, setDigits] = useState(["", "", "", "", "", ""]);
   const [error, setError] = useState("");
@@ -103,9 +103,9 @@ export default function OTPVerify({ user, onOtpSuccess }) {
     }
   };
 
-  const handleResend = () => {
-    alert("Verification code has been resent to your registered institutional email.");
+  const handleClear = () => {
     setDigits(["", "", "", "", "", ""]);
+    setError("");
     if (inputRefs[0].current) inputRefs[0].current.focus();
   };
 
@@ -127,7 +127,7 @@ export default function OTPVerify({ user, onOtpSuccess }) {
           <div className="text-center">
             <h2 className="font-headline-lg text-headline-lg text-primary mb-stack-sm font-semibold">Enter Access Code</h2>
             <p className="font-body-md text-body-md text-text-secondary">
-              A 6-digit verification code has been sent to your registered institutional email. Please enter it below to proceed.
+              Open your authenticator app and enter the current 6-digit code for this account.
             </p>
           </div>
 
@@ -146,7 +146,7 @@ export default function OTPVerify({ user, onOtpSuccess }) {
                   ref={inputRefs[index]}
                   aria-label={`Digit ${index + 1}`}
                   className="w-12 h-16 text-center font-display text-display text-primary bg-surface-container-lowest border border-outline focus:border-primary focus:ring-0 focus:outline-none rounded-none"
-                  maxlength="1"
+                  maxLength="1"
                   type="text"
                   value={digit}
                   onChange={(e) => handleChange(e, index)}
@@ -167,10 +167,10 @@ export default function OTPVerify({ user, onOtpSuccess }) {
               </button>
               <button
                 type="button"
-                onClick={handleResend}
+                onClick={handleClear}
                 className="w-full bg-transparent text-primary font-label-md text-label-md py-2 px-4 uppercase border border-transparent hover:border-outline rounded-none transition-none"
               >
-                Resend Code
+                Clear & Try Again
               </button>
             </div>
           </form>

@@ -1,10 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { HashRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 
-// Layout & Common Components
+// Layout Components
 import Navbar from "./components/layout/Navbar";
-
-import DevBar from "./components/common/DevBar";
 
 // Auth Pages
 import Login from "./pages/auth/Login";
@@ -22,38 +20,41 @@ import VoteSubmitted from "./pages/voter/VoteSubmitted";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import Results from "./pages/admin/Results";
 
-import { initializeMockDatabase } from "./services/mockApi";
-
-
 import { getMe, logout as apiLogout } from "./services/api";
+
+function toClientUser(meData) {
+  return {
+    studentId: meData.username,
+    username: meData.username,
+    role: meData.role === "voter" ? "student" : meData.role,
+    hasVoted: !!meData.has_voted,
+  };
+}
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   const [receipt, setReceipt] = useState(null);
+  // Until this resolves we don't know yet whether there's a valid backend
+  // session, so we hold off rendering any route guards to avoid a flash of
+  // the login page (or worse, a flash of a protected page).
+  const [checkingSession, setCheckingSession] = useState(true);
 
   useEffect(() => {
-    initializeMockDatabase();
-
     const checkSession = async () => {
       try {
         const res = await getMe();
         const meData = res.data?.data;
         if (meData) {
-          setUser({
-            studentId: meData.username,
-            username: meData.username,
-            role: meData.role === "voter" ? "student" : meData.role,
-            hasVoted: meData.has_voted,
-          });
-          return;
+          setUser(toClientUser(meData));
         }
       } catch (err) {
-        // Fallback to local session if backend session doesn't exist
-      }
-      const storedUser = sessionStorage.getItem("avp_user_session");
-      if (storedUser) {
-        setUser(JSON.parse(storedUser));
+        // No valid backend session — user stays logged out. We intentionally
+        // do NOT fall back to any client-only/local session store: dashboards
+        // must only be reachable with a real, server-verified session.
+        setUser(null);
+      } finally {
+        setCheckingSession(false);
       }
     };
 
@@ -62,34 +63,30 @@ export default function App() {
 
   const handleLoginSuccess = (loggedInUser) => {
     setUser(loggedInUser);
-    sessionStorage.setItem("avp_user_session", JSON.stringify(loggedInUser));
   };
 
   const handleLogout = async () => {
     try {
       await apiLogout();
     } catch (err) {
-      // Ignore logout API failure
+      // Ignore logout API failure — we still clear local state below.
     }
     setUser(null);
     setSelectedCandidate(null);
     setReceipt(null);
-    sessionStorage.removeItem("avp_user_session");
   };
 
-  const handleResetDev = () => {
-    setUser(null);
-    setSelectedCandidate(null);
-    setReceipt(null);
-    sessionStorage.removeItem("avp_user_session");
-  };
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-text-primary">
+        <p className="font-body-md text-body-md text-text-secondary">Loading session…</p>
+      </div>
+    );
+  }
 
   return (
     <Router>
       <div className="min-h-screen flex flex-col bg-background text-text-primary">
-        {/* Developer Utility Bar */}
-        <DevBar user={user} setUser={setUser} onReset={handleResetDev} />
-
         {/* Header/Nav Bar */}
         <Navbar user={user} onLogout={handleLogout} />
 
@@ -105,18 +102,22 @@ export default function App() {
             <Route
               path="/register"
               element={
-                !user ? <Register onLoginSuccess={handleLoginSuccess} /> : <Navigate to="/2fa-setup" replace />
+                !user ? <Register onLoginSuccess={handleLoginSuccess} /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
               }
             />
 
-            {/* Auth Setup / Verification Routes */}
+            {/* Auth Setup / Verification Routes (backend session-gated) */}
             <Route
               path="/2fa-setup"
-              element={<TwoFactorSetup user={user} on2faSuccess={handleLoginSuccess} />}
+              element={
+                !user ? <TwoFactorSetup /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
+              }
             />
             <Route
               path="/otp-verify"
-              element={<OTPVerify user={user} onOtpSuccess={handleLoginSuccess} />}
+              element={
+                !user ? <OTPVerify onOtpSuccess={handleLoginSuccess} /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
+              }
             />
 
             {/* Voter Protected Routes */}
@@ -131,17 +132,23 @@ export default function App() {
             <Route
               path="/ballot"
               element={
-                user && user.role === "student"
+                user && user.role === "student" && !user.hasVoted
                   ? <Candidates selectedCandidate={selectedCandidate} onSelectCandidate={setSelectedCandidate} />
-                  : <Navigate to="/login" replace />
+                  : <Navigate to={user ? "/dashboard" : "/login"} replace />
               }
             />
             <Route
               path="/confirm-vote"
               element={
-                user && user.role === "student"
-                  ? <VoteConfirm user={user} selectedCandidate={selectedCandidate} onVoteCompleted={(r) => { setReceipt(r); setUser({ ...user, hasVoted: true }); }} />
-                  : <Navigate to="/login" replace />
+                user && user.role === "student" && !user.hasVoted
+                  ? (
+                    <VoteConfirm
+                      user={user}
+                      selectedCandidate={selectedCandidate}
+                      onVoteCompleted={(r) => { setReceipt(r); setUser({ ...user, hasVoted: true }); }}
+                    />
+                  )
+                  : <Navigate to={user ? "/dashboard" : "/login"} replace />
               }
             />
             <Route
@@ -176,7 +183,7 @@ export default function App() {
             {/* Default Redirect */}
             <Route
               path="*"
-              element={<Navigate to={user ? (user.role === "admin" ? "/admin" : "/dashboard") : "/register"} replace />}
+              element={<Navigate to={user ? (user.role === "admin" ? "/admin" : "/dashboard") : "/login"} replace />}
             />
           </Routes>
         </div>

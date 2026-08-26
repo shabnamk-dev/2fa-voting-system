@@ -6,6 +6,10 @@ const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+// ---------------------------------------------------------
+// Auth
+// ---------------------------------------------------------
+
 // POST /api/register
 export const register = (username, password) =>
   api.post("/api/register", { username, password });
@@ -14,7 +18,7 @@ export const register = (username, password) =>
 export const login = (username, password) =>
   api.post("/api/login", { username, password });
 
-// GET /api/setup-2fa → returns { qr_code, username }
+// GET /api/setup-2fa → returns { qr_code, secret, username }
 export const getSetup2FA = () => api.get("/api/setup-2fa");
 
 // POST /api/setup-2fa → confirm TOTP during setup
@@ -30,5 +34,68 @@ export const getMe = () => api.get("/api/me");
 
 // POST /api/logout
 export const logout = () => api.post("/api/logout");
+
+// ---------------------------------------------------------
+// Candidates
+// ---------------------------------------------------------
+
+// GET /api/candidates
+export const getCandidates = () => api.get("/api/candidates");
+
+// POST /api/candidates
+export const createCandidate = (name, party, description, image_url = null, position = "President") =>
+  api.post("/api/candidates", {
+    name,
+    party,
+    description,
+    image_url,
+    position,
+  });
+
+// PUT /api/candidates/:id
+export const updateCandidate = (id, name, party, description, image_url = null, position = "President") =>
+  api.put(`/api/candidates/${id}`, {
+    name,
+    party,
+    description,
+    image_url,
+    position,
+  });
+
+// DELETE /api/candidates/:id
+export const deleteCandidate = (id) =>
+  api.delete(`/api/candidates/${id}`);
+
+// ---------------------------------------------------------
+// Voting
+// ---------------------------------------------------------
+
+// POST /api/vote  (candidateId = null/undefined means abstain)
+export const castVote = (candidateId) =>
+  api.post("/api/vote", { candidate_id: candidateId ?? null });
+
+// GET /api/my-vote → this voter's receipt
+export const getMyVote = () => api.get("/api/my-vote");
+
+// GET /api/results
+export const getResult = () => api.get("/api/results");
+
+// GET /api/election → current election name/status
+export const getElection = () => api.get("/api/election");
+
+// ---------------------------------------------------------
+// Admin
+// ---------------------------------------------------------
+
+// GET /api/admin/security-stats
+export const getSecurityStats = () => api.get("/api/admin/security-stats");
+
+// GET /api/admin/security-events
+export const getSecurityEvents = (limit = 50) =>
+  api.get("/api/admin/security-events", { params: { limit } });
+
+// POST /api/admin/election  { status: "UPCOMING" | "OPEN" | "CLOSED" }
+export const updateElectionStatus = (status) =>
+  api.post("/api/admin/election", { status });
 
 export default api;

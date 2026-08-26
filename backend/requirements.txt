@@ -1,4 +1,5 @@
 Flask>=3.0
+Flask-Cors>=4.0
 Werkzeug>=3.0
 pyotp>=2.9
 qrcode[pil]>=7.4

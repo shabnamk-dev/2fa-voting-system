@@ -2,15 +2,23 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { getSetup2FA, confirmSetup2FA } from "../../services/api";
 
-export default function TwoFactorSetup({ user, on2faSuccess }) {
+// Groups a base32 secret into 4-character chunks for easier manual entry,
+// e.g. "JBSWY3DPEHPK3PXP" -> "JBSW Y3DP EHPK 3PXP"
+function formatSecret(secret) {
+  if (!secret) return "";
+  return secret.match(/.{1,4}/g)?.join(" ") || secret;
+}
+
+export default function TwoFactorSetup() {
   const navigate = useNavigate();
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [qrCode, setQrCode] = useState("");
+  const [secret, setSecret] = useState("");
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText("JBSW Y3DP EHPK 3PXP");
+    navigator.clipboard.writeText(secret);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -21,6 +29,9 @@ export default function TwoFactorSetup({ user, on2faSuccess }) {
         const res = await getSetup2FA();
         if (res.data?.data?.qr_code) {
           setQrCode(res.data.data.qr_code);
+        }
+        if (res.data?.data?.secret) {
+          setSecret(res.data.data.secret);
         }
       } catch (err) {
         setError("Failed to load 2FA setup details. Please log in again.");
@@ -106,11 +117,12 @@ export default function TwoFactorSetup({ user, on2faSuccess }) {
               </span>
               <div className="flex items-center justify-between border border-outline bg-surface-main p-3">
                 <code className="font-body-md text-body-md text-primary tracking-widest select-all">
-                  JBSW Y3DP EHPK 3PXP
+                  {secret ? formatSecret(secret) : "Loading…"}
                 </code>
                 <button
                   onClick={handleCopy}
-                  className="text-secondary hover:text-primary transition-none ml-4 flex items-center"
+                  disabled={!secret}
+                  className="text-secondary hover:text-primary transition-none ml-4 flex items-center disabled:opacity-40"
                   title="Copy to clipboard"
                 >
                   <span className="material-symbols-outlined">{copied ? "check" : "content_copy"}</span>
@@ -128,7 +140,7 @@ export default function TwoFactorSetup({ user, on2faSuccess }) {
                   <input
                     className="w-full border border-outline bg-surface-container-lowest font-body-lg text-body-lg text-primary px-4 py-3 focus:outline-none focus:ring-1 focus:ring-primary rounded-none tracking-widest text-center"
                     id="verification_code"
-                    maxlength="6"
+                    maxLength="6"
                     placeholder="000000"
                     type="text"
                     value={code}

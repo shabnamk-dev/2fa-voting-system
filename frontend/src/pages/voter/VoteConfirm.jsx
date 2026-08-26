@@ -1,27 +1,31 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { mockApi } from "../../services/mockApi";
+import { castVote } from "../../services/api";
 
-export default function VoteConfirm({ user, selectedCandidate, onVoteCompleted }) {
+export default function VoteConfirm({ selectedCandidate, onVoteCompleted }) {
   const navigate = useNavigate();
   const [verified, setVerified] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  const handleFinalSubmit = () => {
-    if (!verified) return;
+  const isNota = !selectedCandidate || selectedCandidate.id === "nota";
+
+  const handleFinalSubmit = async () => {
+    if (!verified || submitting) return;
     setError("");
+    setSubmitting(true);
 
     try {
-      const candidateId = selectedCandidate?.id || "nota";
-      const receipt = mockApi.submitVote(user.studentId, candidateId);
+      const candidateId = isNota ? null : selectedCandidate.id;
+      const response = await castVote(candidateId);
+      const receipt = response.data?.data;
       onVoteCompleted(receipt);
       navigate("/receipt");
     } catch (err) {
-      setError(err.message || "Failed to record ballot.");
+      setError(err.response?.data?.message || err.message || "Failed to record ballot.");
+      setSubmitting(false);
     }
   };
-
-  const isNota = !selectedCandidate || selectedCandidate.id === "nota";
 
   return (
     <main className="flex-grow w-full max-w-container-max mx-auto px-margin-page py-stack-lg md:py-[64px]">
@@ -46,20 +50,20 @@ export default function VoteConfirm({ user, selectedCandidate, onVoteCompleted }
           }`}>
             <div>
               <h2 className="font-label-lg text-label-lg uppercase tracking-wider text-text-secondary mb-1">
-                Student Council General Secretary 2026 Selection
+                Your Selection
               </h2>
               {isNota ? (
-                <p className="font-headline-md text-headline-md text-text-secondary italic">Abstained</p>
+                <p className="font-headline-md text-headline-md text-text-secondary italic">Abstained (None of the Above)</p>
               ) : (
                 <>
                   <p className="font-headline-md text-headline-md text-primary font-bold">{selectedCandidate.name}</p>
                   <p className="font-body-md text-body-md text-text-secondary">
-                    {selectedCandidate.affiliation}
+                    {selectedCandidate.position || selectedCandidate.party || ""}
                   </p>
                 </>
               )}
             </div>
-            <button 
+            <button
               onClick={() => navigate("/ballot")}
               className="border border-outline px-4 py-2 font-label-md text-label-md uppercase tracking-wider hover:bg-surface-variant transition-none rounded-none text-primary"
             >
@@ -80,8 +84,8 @@ export default function VoteConfirm({ user, selectedCandidate, onVoteCompleted }
             </p>
             <div className="mt-stack-sm pt-stack-sm border-t border-error/30">
               <label className="flex items-start gap-stack-sm cursor-pointer select-none">
-                <input 
-                  className="mt-1 rounded-none border-error text-error focus:ring-error focus:ring-offset-0 bg-transparent cursor-pointer" 
+                <input
+                  className="mt-1 rounded-none border-error text-error focus:ring-error focus:ring-offset-0 bg-transparent cursor-pointer"
                   type="checkbox"
                   checked={verified}
                   onChange={(e) => setVerified(e.target.checked)}
@@ -91,12 +95,12 @@ export default function VoteConfirm({ user, selectedCandidate, onVoteCompleted }
                 </span>
               </label>
             </div>
-            <button 
+            <button
               onClick={handleFinalSubmit}
-              disabled={!verified}
+              disabled={!verified || submitting}
               className="w-full bg-error text-on-error py-4 font-headline-md text-headline-md rounded-none hover:bg-error-base transition-none mt-stack-md disabled:opacity-50 disabled:cursor-not-allowed uppercase tracking-wider"
             >
-              Submit Final Vote
+              {submitting ? "Submitting…" : "Submit Final Vote"}
             </button>
           </div>
         </div>
