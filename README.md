@@ -1,24 +1,33 @@
+
+
 ## How to run
 
 ### Backend
 
+```bash
 cd backend
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 python3 seed_admin.py             # create your first admin account
 python3 app.py                    # starts on http://localhost:5000
+```
 
+The SQLite file `voting_system.db` is created automatically on first run.
+**If you already have an existing `voting_system.db` from before**, don't
+delete it — `database.py` now safely migrates the old `votes` table shape to
+the new one (adds receipt codes + abstain support) and preserves your data.
+This happens automatically the first time you start the updated backend.
 
 ### Frontend
 
 Drop the contents of `frontend/src` into your existing `src/` folder,
 overwriting the files listed below. Then, as usual:
 
-
+```bash
 npm install
 npm run dev
-
+```
 
 Make sure `axios` and `react-router-dom` are in your `package.json` — the
 backend expects requests from `http://localhost:5173` (Vite's default) or
