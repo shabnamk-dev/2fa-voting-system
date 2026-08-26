@@ -44,18 +44,18 @@ input[type=number] {
 
 .input-institutional:focus {
   outline: none !important;
-  border: 1.5px solid #000000 !important;
+  border: 1.5px solid #1e40af !important;
   box-shadow: none !important;
 }
 
 .btn-institutional {
-  background-color: #000000;
+  background-color: #0f172a;
   color: #ffffff;
   border-radius: 0px !important;
-  border: 1px solid #000000;
+  border: 1px solid #0f172a;
   transition: none !important;
 }
 
 .btn-institutional:hover {
-  background-color: #1b1b1d;
+  background-color: #1e293b;
 }
