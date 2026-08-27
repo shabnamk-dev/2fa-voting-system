@@ -14,7 +14,6 @@ def get_connection():
 
 @contextmanager
 def db_cursor(commit=False):
-    """Context manager so routes don't have to manage connections by hand."""
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -31,12 +30,7 @@ def _column_names(cur, table):
 
 
 def _migrate_votes_table(cur):
-    """
-    Older versions of this schema had `candidate_id INTEGER NOT NULL` and no
-    receipt_code column, which makes it impossible to store an abstain
-    ("None of the Above") vote or a verifiable receipt. If we detect the old
-    shape, rebuild the table in place while preserving any existing rows.
-    """
+   
     cur.execute("""
         SELECT name FROM sqlite_master
         WHERE type='table' AND name='votes'
@@ -88,7 +82,7 @@ def _migrate_votes_table(cur):
 
 
 def init_db():
-    """Create tables if they don't already exist. Safe to call on every startup."""
+
     with db_cursor(commit=True) as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -155,8 +149,7 @@ def init_db():
             )
         """)
 
-        # Make sure there is always at least one election row so voting
-        # works out of the box and the admin toggle has something to control.
+
         cur.execute("SELECT COUNT(*) AS total FROM elections")
         if cur.fetchone()["total"] == 0:
             cur.execute("""
@@ -330,7 +323,6 @@ def cast_vote(voter_id, candidate_id):
                 "message": "User has already voted."
             }
 
-        # Candidate exists? (skip check for abstain / None)
         if candidate_id is not None:
             cur.execute(
                 "SELECT id FROM candidates WHERE id=?",
@@ -433,7 +425,6 @@ def get_results():
         """)
         results = cur.fetchall()
 
-        # Total includes abstains so percentages reflect the full turnout.
         cur.execute("SELECT COUNT(*) AS total FROM votes")
         total_votes = cur.fetchone()["total"]
 

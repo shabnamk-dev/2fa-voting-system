@@ -2,8 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { getSetup2FA, confirmSetup2FA } from "../../services/api";
 
-// Groups a base32 secret into 4-character chunks for easier manual entry,
-// e.g. "JBSWY3DPEHPK3PXP" -> "JBSW Y3DP EHPK 3PXP"
+
 function formatSecret(secret) {
   if (!secret) return "";
   return secret.match(/.{1,4}/g)?.join(" ") || secret;

@@ -34,16 +34,12 @@ LOCKOUT_MINUTES = 15
 ISSUER_NAME = "SecureVotingSystem"
 
 
-# ---------------------------------------------------------
 # Database
-# ---------------------------------------------------------
 
 db.init_db()
 
 
-# ---------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------
 
 def success(message, data=None, status=200):
     response = {
@@ -259,7 +255,6 @@ def login():
         True
     )
 
-    # First login → setup 2FA
     if not user["is_2fa_enabled"]:
 
         session.clear()
