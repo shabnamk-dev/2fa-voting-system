@@ -114,7 +114,7 @@ CORS origin in `app.py`.
 - Voter dashboard showing live election status and past vote receipt
 
 Team
-<a href="https://github.com/shabnamk-dev"> <img src="https://github.com/shabnamk-dev.png" width="80px" style="border-radius:50%"><br> Shabnam </a> &nbsp;&nbsp;&nbsp; <a href="https://github.com/ethancancode"> <img src="https://github.com/ethancancode.png" width="80px" style="border-radius:50%"><br> Ethan </a> &nbsp;&nbsp;&nbsp; <a href="https://github.com/swarnaldeshmukh"> <img src="https://github.com/swarnaldeshmukh.png" width="80px" style="border-radius:50%"><br> Swarnal </a>
+<table> <tr> <td align="center"> <a href="https://github.com/shabnamk-dev"> <img src="https://github.com/shabnamk-dev.png" width="80px" style="border-radius:50%"><br> <sub><b>Shabnam</b></sub> </a> </td> <td align="center"> <a href="https://github.com/ethancancode"> <img src="https://github.com/ethancancode.png" width="80px" style="border-radius:50%"><br> <sub><b>Ethan</b></sub> </a> </td> <td align="center"> <a href="https://github.com/swarnaldeshmukh"> <img src="https://github.com/swarnaldeshmukh.png" width="80px" style="border-radius:50%"><br> <sub><b>Swarnal</b></sub> </a> </td> </tr> </table>
 
 ## License / Citation
 
