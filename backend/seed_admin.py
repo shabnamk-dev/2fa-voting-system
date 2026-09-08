@@ -1,13 +1,19 @@
 from getpass import getpass
 from werkzeug.security import generate_password_hash
-
+import os
 import database as db
 
 
 def main():
     print("=== Secure Voting System — Admin Setup ===")
 
-    username = input("Admin username: ").strip()
+    username = os.getenv("ADMIN_USERNAME")
+
+    if username:
+        username = username.strip()
+    else:
+        username = input("Admin Username: ").strip()
+
 
     if not username:
         print("Error: username cannot be empty.")
@@ -17,12 +23,14 @@ def main():
         print(f"Error: user '{username}' already exists.")
         return
 
-    password = getpass("Admin password: ")
-    confirm_password = getpass("Confirm password: ")
+    password = os.getenv("ADMIN_PASSWORD")
+    if password is None:
+        password = getpass("Admin Password")
+        confirm_password = getpass("Confirm password: ")
 
-    if password != confirm_password:
-        print("Error: passwords do not match.")
-        return
+        if password !=confirm_password:
+            print("Error: passwords do not match.")
+            return
 
     if len(password) < 8:
         print("Error: password must be at least 8 characters.")

@@ -1,9 +1,11 @@
 import secrets
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
+import os
 
-DB_PATH = "voting_system.db"
-
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "voting_system.db"))
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)

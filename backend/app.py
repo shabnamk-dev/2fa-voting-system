@@ -15,19 +15,36 @@ import database as db
 
 
 app = Flask(__name__)
-
+SECRET_KEY = os.getenv("SECRET_KEY")
 # Secret key for Flask sessions
-app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
+
+if not SECRET_KEY:
+    if os.getenv("APP_ENV","development") == "production":
+        raise RuntimeError("SECRET_KEY environment variable is required.")
+
+    else:
+        SECRET_KEY = secrets.token_hex(32)
+
+app.secret_key = SECRET_KEY
+IS_PRODUCTION = os.getenv("FLASK_ENV") == "production"
 
 app.config.update(
     SESSION_COOKIE_HTTPONLY = True,
-    SESSION_COOKIE_SAMESITE = "Lax",
+    SESSION_COOKIE_SAMESITE = "None" if IS_PRODUCTION else "Lax",
 
-    SESSION_COOKIE_SECURE = False
+    SESSION_COOKIE_SECURE = IS_PRODUCTION
 )
 
+FRONTEND_URL = os.getenv("FRONTEND_URL")
+
+if IS_PRODUCTION:
+    if not FRONTEND_URL:
+        raise RuntimeError("FRONTEND_URL environment variable is required.")
 # Allow React frontend to communicate with Flask
-CORS(app, supports_credentials=True)
+    CORS(app, origins=[FRONTEND_URL],supports_credentials=True)
+
+else:
+    CORS(app, supports_credentials=True)
 
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
