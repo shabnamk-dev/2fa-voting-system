@@ -61,9 +61,9 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
   const attemptId = location.state?.attempt_id || sessionStorage.getItem("auth_attempt_id");
   const username = location.state?.username || sessionStorage.getItem("auth_username") || "";
 
-  // Retrieve last used 2FA method
-  const lastUsedKey = username ? `last_used_2fa_${username}` : "last_used_2fa";
-  const lastUsedMethod = localStorage.getItem(lastUsedKey) || localStorage.getItem("last_used_2fa") || "";
+  // Retrieve last used 2FA method strictly scoped to this account
+  const lastUsedKey = username ? `last_used_2fa_${username}` : null;
+  const lastUsedMethod = lastUsedKey ? (localStorage.getItem(lastUsedKey) || "") : "";
 
   const [selectedMethod, setSelectedMethod] = useState(null);
   const [error, setError] = useState("");
@@ -127,9 +127,8 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
 
 
   const finishAuth = useCallback(async (verifiedMethod) => {
-    if (verifiedMethod) {
+    if (verifiedMethod && lastUsedKey) {
       localStorage.setItem(lastUsedKey, verifiedMethod);
-      localStorage.setItem("last_used_2fa", verifiedMethod);
     }
 
     sessionStorage.removeItem("auth_attempt_id");
