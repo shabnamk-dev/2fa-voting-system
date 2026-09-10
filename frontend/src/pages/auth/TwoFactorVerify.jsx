@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 import {
+  getSetup2FA,
+  confirmSetup2FA,
   verifyTOTP,
   createPushRequest,
   getPushStatus,
@@ -70,8 +72,9 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
   const [loading, setLoading] = useState(false);
 
   // TOTP State
+  const isFirstTimeTotp = !lastUsedMethod || lastUsedMethod !== "TOTP";
+  const [totpMode, setTotpMode] = useState(isFirstTimeTotp ? "setup" : "verify"); // "setup" | "verify"
   const [otpCode, setOtpCode] = useState("");
-  const [showTotpSetupModal, setShowTotpSetupModal] = useState(false);
   const [totpSetupData, setTotpSetupData] = useState(null);
   const [totpSetupLoading, setTotpSetupLoading] = useState(false);
 
@@ -92,10 +95,9 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
   // Biometric / Security Key State
   const [webAuthnStatus, setWebAuthnStatus] = useState("idle");
 
-  const handleFetchTotpSetup = async () => {
+  const loadTotpSetupData = useCallback(async () => {
     setError("");
     setTotpSetupLoading(true);
-    setShowTotpSetupModal(true);
     try {
       const res = await getSetup2FA();
       const data = res.data?.data;
@@ -123,8 +125,15 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
     } finally {
       setTotpSetupLoading(false);
     }
-  };
+  }, [username]);
 
+
+  // Automatically load TOTP setup data if entering in setup mode
+  useEffect(() => {
+    if (selectedMethod === "TOTP" || isFirstTimeTotp) {
+      loadTotpSetupData();
+    }
+  }, [isFirstTimeTotp, loadTotpSetupData, selectedMethod]);
 
   const finishAuth = useCallback(async (verifiedMethod) => {
     if (verifiedMethod && lastUsedKey) {
@@ -182,7 +191,34 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
 
     setLoading(true);
     try {
-      await verifyTOTP(token, attemptId);
+      let verified = false;
+      
+      // Try setup confirmation first if in setup mode
+      if (totpMode === "setup") {
+        try {
+          await confirmSetup2FA(token);
+          verified = true;
+        } catch (_cErr) {
+          // If setup fails, will try verifyTOTP below
+        }
+      }
+
+      // Try verifyTOTP
+      if (!verified) {
+        try {
+          await verifyTOTP(token, attemptId);
+          verified = true;
+        } catch (vErr) {
+          // If verify returned 400 (e.g. not configured yet), fallback to confirmSetup2FA
+          if (vErr.response?.status === 400 || vErr.response?.status === 401) {
+            await confirmSetup2FA(token);
+            verified = true;
+          } else {
+            throw vErr;
+          }
+        }
+      }
+
       await finishAuth("TOTP");
     } catch (err) {
       setError(err.response?.data?.message || err.message || "Invalid authenticator code.");
@@ -273,7 +309,12 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
     if (pushPollTimer.current) clearInterval(pushPollTimer.current);
     if (qrPollTimer.current) clearInterval(qrPollTimer.current);
 
-    if (methodId === "PUSH") {
+    if (methodId === "TOTP") {
+      if (totpMode === "setup" || isFirstTimeTotp) {
+        setTotpMode("setup");
+        loadTotpSetupData();
+      }
+    } else if (methodId === "PUSH") {
       startPushChallenge();
     } else if (methodId === "QR") {
       startQRChallenge();
@@ -402,101 +443,125 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
               /* METHOD VERIFICATION CEREMONIES                               */
               /* ============================================================ */
               <div className="flex flex-col gap-stack-md">
-                {/* 1. TOTP Verification */}
+                {/* 1. TOTP Verification & Setup */}
                 {selectedMethod === "TOTP" && (
                   <div className="flex flex-col gap-stack-md max-w-sm mx-auto w-full">
-                    <div className="text-center">
-                      <span className="material-symbols-outlined text-4xl text-primary mb-1">pin</span>
-                      <h2 className="font-headline-md font-semibold text-primary">Enter Authenticator Code</h2>
-                      <p className="text-xs text-text-secondary mt-1">
-                        Open your authenticator app and enter the 6-digit code.
-                      </p>
-                    </div>
-
-                    <form onSubmit={handleVerifyTOTP} className="flex flex-col gap-3">
-                      <input
-                        autoFocus
-                        maxLength="6"
-                        placeholder="000000"
-                        type="text"
-                        value={otpCode}
-                        onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
-                        required
-                        className="w-full border border-outline p-3 text-center font-mono text-3xl tracking-widest bg-surface-container-lowest focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                      <button
-                        type="submit"
-                        disabled={loading || otpCode.length !== 6}
-                        className="w-full bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 disabled:opacity-50"
-                      >
-                        <span className="material-symbols-outlined text-base">check_circle</span>
-                        {loading ? "Verifying..." : "Verify & Sign In"}
-                      </button>
-                    </form>
-
-                    {/* Lost Code / Scan New TOTP Option */}
-                    <div className="pt-2 text-center border-t border-outline/50">
-                      <button
-                        type="button"
-                        onClick={handleFetchTotpSetup}
-                        className="text-xs text-text-secondary hover:text-primary underline cursor-pointer mx-auto block"
-                      >
-                        Lost your authenticator? Scan QR or view key
-                      </button>
-                    </div>
-
-                    {/* TOTP Setup / Recovery Modal */}
-                    {showTotpSetupModal && (
-                      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                        <div className="bg-surface-container-lowest border border-outline max-w-sm w-full p-6 shadow-xl flex flex-col items-center text-center">
-                          <div className="flex items-center justify-between w-full border-b border-outline pb-2 mb-4">
-                            <span className="font-headline-sm font-semibold text-primary">Authenticator Setup</span>
-                            <button
-                              type="button"
-                              onClick={() => setShowTotpSetupModal(false)}
-                              className="text-text-secondary hover:text-primary text-lg font-bold"
-                            >
-                              ✕
-                            </button>
-                          </div>
-
-                          <p className="text-xs text-text-secondary mb-4">
+                    {totpMode === "setup" ? (
+                      /* First Time Setup View (QR Code + Secret + Verify Code) */
+                      <div className="flex flex-col items-center text-center gap-3">
+                        <div className="text-center">
+                          <span className="material-symbols-outlined text-4xl text-primary mb-1">qr_code_2</span>
+                          <h2 className="font-headline-md font-semibold text-primary">Set Up Authenticator App</h2>
+                          <p className="text-xs text-text-secondary mt-1">
                             Scan this QR code with Google Authenticator, Authy, or your password manager.
                           </p>
+                        </div>
 
-                          <div className="border-2 border-primary p-2 bg-white mb-3">
-                            {totpSetupLoading ? (
-                              <div className="w-44 h-44 flex items-center justify-center text-xs text-text-secondary">
-                                Loading setup QR...
-                              </div>
-                            ) : totpSetupData?.qr_code ? (
-                              <img className="w-44 h-44 object-contain" alt="TOTP QR" src={totpSetupData.qr_code} />
-                            ) : (
-                              <div className="w-44 h-44 flex flex-col items-center justify-center text-xs text-text-secondary p-2">
-                                <span className="material-symbols-outlined text-3xl mb-1 text-primary">key</span>
-                                <span>Manual Setup Secret:</span>
-                                <span className="font-mono font-bold mt-1 text-primary text-[11px] select-all bg-surface-container p-1 border border-outline">
-                                  {totpSetupData?.secret || "JBSWY3DPEHPK3PXP"}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-
-                          {totpSetupData?.secret && (
-                            <div className="w-full text-left bg-surface-container border border-outline p-2 mb-4 text-[11px]">
-                              <span className="text-text-secondary block">Account Secret Key:</span>
-                              <span className="font-mono font-bold text-primary select-all break-all">
-                                {totpSetupData.secret}
+                        {/* QR Code Container */}
+                        <div className="border-4 border-primary p-2 bg-white shadow-sm">
+                          {totpSetupLoading ? (
+                            <div className="w-48 h-48 flex items-center justify-center text-xs text-text-secondary">
+                              Loading setup QR...
+                            </div>
+                          ) : totpSetupData?.qr_code ? (
+                            <img className="w-48 h-48 object-contain" alt="Authenticator QR" src={totpSetupData.qr_code} />
+                          ) : (
+                            <div className="w-48 h-48 flex flex-col items-center justify-center text-xs text-text-secondary p-2">
+                              <span className="material-symbols-outlined text-3xl mb-1 text-primary">key</span>
+                              <span>Manual Secret:</span>
+                              <span className="font-mono font-bold mt-1 text-primary text-[11px] select-all bg-surface-container p-1 border border-outline">
+                                {totpSetupData?.secret || "JBSWY3DPEHPK3PXP"}
                               </span>
                             </div>
                           )}
+                        </div>
 
+                        {totpSetupData?.secret && (
+                          <div className="w-full text-left bg-surface-container border border-outline p-2.5 text-[11px]">
+                            <span className="text-text-secondary block font-semibold mb-0.5">Manual Key:</span>
+                            <span className="font-mono font-bold text-primary select-all break-all">
+                              {totpSetupData.secret}
+                            </span>
+                          </div>
+                        )}
+
+                        <form onSubmit={handleVerifyTOTP} className="flex flex-col gap-3 w-full mt-1">
+                          <label className="text-xs text-text-secondary text-left font-medium block">
+                            Enter the 6-digit code from your authenticator:
+                          </label>
+                          <input
+                            autoFocus
+                            maxLength="6"
+                            placeholder="000000"
+                            type="text"
+                            value={otpCode}
+                            onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
+                            required
+                            className="w-full border border-outline p-3 text-center font-mono text-3xl tracking-widest bg-surface-container-lowest focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                          <button
+                            type="submit"
+                            disabled={loading || otpCode.length !== 6}
+                            className="w-full bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 disabled:opacity-50"
+                          >
+                            <span className="material-symbols-outlined text-base">check_circle</span>
+                            {loading ? "Verifying..." : "Verify & Activate"}
+                          </button>
+                        </form>
+
+                        {!isFirstTimeTotp && (
                           <button
                             type="button"
-                            onClick={() => setShowTotpSetupModal(false)}
-                            className="w-full bg-primary text-on-primary py-2 text-xs font-bold uppercase tracking-wider"
+                            onClick={() => setTotpMode("verify")}
+                            className="text-xs text-text-secondary hover:text-primary underline mt-1"
                           >
-                            Done & Enter Code
+                            Already saved the code? Enter 6-digit code directly
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      /* Subsequent Login View (Enter 6-digit code directly) */
+                      <div className="flex flex-col gap-stack-md">
+                        <div className="text-center">
+                          <span className="material-symbols-outlined text-4xl text-primary mb-1">pin</span>
+                          <h2 className="font-headline-md font-semibold text-primary">Enter Authenticator Code</h2>
+                          <p className="text-xs text-text-secondary mt-1">
+                            Open your authenticator app and enter the 6-digit code.
+                          </p>
+                        </div>
+
+                        <form onSubmit={handleVerifyTOTP} className="flex flex-col gap-3">
+                          <input
+                            autoFocus
+                            maxLength="6"
+                            placeholder="000000"
+                            type="text"
+                            value={otpCode}
+                            onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
+                            required
+                            className="w-full border border-outline p-3 text-center font-mono text-3xl tracking-widest bg-surface-container-lowest focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                          <button
+                            type="submit"
+                            disabled={loading || otpCode.length !== 6}
+                            className="w-full bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 disabled:opacity-50"
+                          >
+                            <span className="material-symbols-outlined text-base">check_circle</span>
+                            {loading ? "Verifying..." : "Verify & Sign In"}
+                          </button>
+                        </form>
+
+                        {/* Scan again / Reconfigure Option */}
+                        <div className="pt-2 text-center border-t border-outline/50">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTotpMode("setup");
+                              loadTotpSetupData();
+                            }}
+                            className="text-xs text-text-secondary hover:text-primary underline cursor-pointer mx-auto block"
+                          >
+                            Lost your authenticator? Scan QR or view key
                           </button>
                         </div>
                       </div>
