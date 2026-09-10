@@ -8,6 +8,7 @@ import Navbar from "./components/layout/Navbar";
 import Login from "./pages/auth/Login";
 import Register from "./pages/auth/Register";
 import TwoFactorSetup from "./pages/auth/TwoFactorSetup";
+import TwoFactorVerify from "./pages/auth/TwoFactorVerify";
 import OTPVerify from "./pages/auth/OTPVerify";
 
 // Voter Pages
@@ -46,7 +47,6 @@ export default function App() {
           setUser(toClientUser(meData));
         }
       } catch (err) {
-
         setUser(null);
       } finally {
         setCheckingSession(false);
@@ -101,11 +101,15 @@ export default function App() {
               }
             />
 
-            {/* Auth Setup / Verification Routes (backend session-gated) */}
+            {/* Auth Setup / Verification Routes */}
             <Route
               path="/2fa-setup"
+              element={<TwoFactorSetup onAuthSuccess={handleLoginSuccess} />}
+            />
+            <Route
+              path="/2fa-verify"
               element={
-                !user ? <TwoFactorSetup /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
+                !user ? <TwoFactorVerify onAuthSuccess={handleLoginSuccess} /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
               }
             />
             <Route
