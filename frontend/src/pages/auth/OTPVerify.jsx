@@ -16,7 +16,7 @@ export default function OTPVerify({ onOtpSuccess }) {
   ];
 
   useEffect(() => {
-    // Focus first input on mount
+  
     if (inputRefs[0].current) {
       inputRefs[0].current.focus();
     }

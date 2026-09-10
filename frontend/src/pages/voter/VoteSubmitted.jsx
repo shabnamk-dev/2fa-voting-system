@@ -15,8 +15,7 @@ export default function VoteSubmitted({ receipt, onResetBallot }) {
       return;
     }
 
-    // Page was refreshed / navigated to directly — fetch the receipt from
-    // the backend instead of showing a fabricated placeholder.
+
     const fetchReceipt = async () => {
       try {
         const response = await getMyVote();

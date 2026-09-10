@@ -1,99 +1,122 @@
+# 2FA Voting System
+
+A secure online voting platform (Flask + React) that uses **Time-based One-Time
+Password (TOTP)** two-factor authentication to verify voters and admins before
+they can access the system or cast a ballot.
+
+## Reference & Acknowledgement
+
+This project's authentication design was inspired by the security goals and
+system architecture described in:
+
+> S. P. Dhome, A. N. Gade, and O. S. Thakur, "Enhancing the Security of Online
+> Voting Systems Using OTP-Based Multi-Factor Authentication Mechanisms,"
+> *International Journal of Computer Sciences and Engineering*, vol. 14, no. 4,
+> pp. 70–75, Apr. 2026. DOI: [10.26438/ijcse.v14i4.7351](https://doi.org/10.26438/ijcse.v14i4.7351)
+
+The paper proposes a layered OTP-based Online Voting System (User
+Interface → Authentication → Application → Security → Database →
+Monitoring/Logging) and reports strong results for OTP as a second factor:
+a 98.6% authentication success rate, ~3.2s average verification time, and
+89% positive user feedback, while also flagging real risks — SIM-swap
+attacks, phishing, and network-delivery delays — as limitations of
+SMS/email-delivered OTPs. It recommends combining OTP with layered security
+measures such as encryption, monitoring, and (optionally) biometrics.
+
+**What we adopted from the paper:**
+- The core idea of layering a second authentication factor on top of
+  credential login, specifically for the login step *and* before a ballot
+  can be cast.
+- The paper's emphasis on encrypted communication, secure data storage, and
+  logging/monitoring of authentication activity as essential companions to
+  OTP — not just the OTP step in isolation.
+- Tracking authentication outcomes (successes, failures) as a first-class
+  concern, not an afterthought.
+
+**What we did differently, and why:**
+- **TOTP instead of SMS/email OTP.** The paper explicitly names SIM-swap
+  attacks, phishing, and OTP-delivery delay over mobile networks as
+  weaknesses of their approach. We use TOTP (RFC 6238 — the algorithm
+  behind Google Authenticator/Authy), where the code is generated locally
+  on the user's device from a shared secret and never travels over SMS or
+  email. This removes the delivery-delay and SIM-swap risks the paper
+  identifies, at the cost of requiring users to set up an authenticator
+  app during registration.
+- **Session-based auth, not just login-time verification.** Our backend
+  treats "logged in" as a live Flask session validated against
+  `GET /api/me`, with no client-side session fallback, closing the kind of
+  gap that would let a device "remember" a login without live server
+  verification.
+- **Per-vote receipts.** Every vote (including an explicit abstain option)
+  gets a unique receipt code, and voters can retrieve their real recorded
+  vote after the fact via `GET /api/my-vote`. The paper's model focuses on
+  authentication integrity; it doesn't describe a voter-facing
+  verifiability mechanism, so this is an addition on our end.
+- **Admin-facing security monitoring.** In line with the paper's
+  "Monitoring and Logging Layer" recommendation, our admin dashboard
+  surfaces successful/failed logins, failed 2FA attempts, locked accounts,
+  and unauthorized admin access attempts, rather than just logging them
+  silently.
+- **Not yet implemented from the paper's recommendations:** AI-based
+  anomaly/fraud detection, blockchain-based vote storage, and biometric
+  authentication are all mentioned in the paper's "Future Scope" as
+  directions beyond OTP — none of these are in this project, and they're
+  reasonable candidates for future work rather than gaps in the current
+  scope.
+
+In short: we followed the paper's core principle (multi-factor
+authentication as the backbone of voter verification) but chose a
+device-generated TOTP factor over a network-delivered OTP factor,
+specifically to avoid the delivery/SIM-swap weaknesses the paper itself
+identifies.
+
 ## How to run
 
 ### Backend
 
+```
 cd backend
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 python3 seed_admin.py             # create your first admin account
 python3 app.py                    # starts on http://localhost:5000
+```
 
+The SQLite file `voting_system.db` is created automatically on first run.
+If you already have an existing `voting_system.db` from before, don't
+delete it — `database.py` safely migrates the old `votes` table shape to
+the new one (adds receipt codes + abstain support) and preserves your data.
 
 ### Frontend
 
 Drop the contents of `frontend/src` into your existing `src/` folder,
 overwriting the files listed below. Then, as usual:
 
-
+```
 npm install
 npm run dev
-
+```
 
 Make sure `axios` and `react-router-dom` are in your `package.json` — the
 backend expects requests from `http://localhost:5173` (Vite's default) or
 wherever your dev server runs; if you use a different port, update Flask's
 CORS origin in `app.py`.
 
-## What changed
+## Features
 
-### Backend (`app.py`, `database.py`)
+- TOTP-based two-factor authentication for both voters and admins
+- Session-cookie authentication with no client-only session fallback
+- Vote casting with abstain support and unique per-vote receipt codes
+- Admin dashboard: candidate management, election open/close control,
+  and a Login Activity panel (successful/failed logins, failed 2FA
+  attempts, locked accounts, unauthorized admin attempts)
+- Voter dashboard showing live election status and past vote receipt
 
-- **Added `POST /api/vote`** — this route didn't exist before, so casting a
-  ballot was never actually possible end-to-end, despite the database logic
-  for it already being written.
-- **Added `GET /api/my-vote`** — lets the receipt page show your *real*
-  recorded vote, including after a page refresh, instead of a fabricated
-  placeholder.
-- **Added `GET /api/election` and `POST /api/admin/election`** — voters can
-  see whether voting is open; admins can open/close it.
-- **Added `GET /api/admin/security-stats` and `GET /api/admin/security-events`**
-  — powers the new Login Activity panel on the admin dashboard.
-- **Votes now support abstain** (`candidate_id: null`) and every vote —
-  including abstains — gets a unique receipt code. The `votes` table
-  migrates automatically and safely if you have an older copy of the
-  database.
-- **`/api/setup-2fa` now returns the real TOTP secret** for the manual-entry
-  fallback (the frontend was previously showing a hardcoded fake key that
-  had nothing to do with your actual account).
-- Added `Flask-Cors` to `requirements.txt` — it was imported in `app.py` but
-  never listed, which would have failed on a clean install.
-- A new `elections` row is auto-seeded as `OPEN` on first run so voting
-  works immediately without any extra admin setup step.
+Team
+<table> <tr> <td align="center"> <a href="https://github.com/shabnamk-dev"> <img src="https://github.com/shabnamk-dev.png" width="80px" style="border-radius:50%"><br> <sub><b>Shabnam</b></sub> </a> </td> <td align="center"> <a href="https://github.com/ethancancode"> <img src="https://github.com/ethancancode.png" width="80px" style="border-radius:50%"><br> <sub><b>Ethan</b></sub> </a> </td> <td align="center"> <a href="https://github.com/swarnaldeshmukh"> <img src="https://github.com/swarnaldeshmukh.png" width="80px" style="border-radius:50%"><br> <sub><b>Swarnal</b></sub> </a> </td> </tr> </table>
 
-### Frontend
+## License / Citation
 
-- **Removed `DevBar.jsx` and `mockApi.js` entirely.** DevBar let anyone
-  fake-login as a student or admin and land directly on a protected
-  dashboard without any real authentication — this was a direct
-  contradiction of "dashboards should only be visible after real auth."
-  `App.jsx` no longer has any client-only session fallback either
-  (`sessionStorage`/`localStorage`); the *only* source of truth for "is this
-  user logged in" is a live `GET /api/me` call against the Flask session
-  cookie.
-- **Fixed a real bug in `api.js`**: `updateCandidate`/`deleteCandidate` were
-  building URLs with `'/api/candidates/${id}'` — single quotes, not
-  backticks — so `${id}` was being sent literally instead of interpolated.
-  Every candidate update/delete call was silently broken.
-- **`AdminDashboard.jsx` — full rewrite.** The old version mixed real
-  `api.js` calls with calls to `mockApi` and an undefined `addCandidate`
-  function (it would have crashed), and was built around fields the
-  backend doesn't have (`affiliation`, `platform`, `status`, `votes`)
-  instead of the real schema (`name`, `party`, `description`, `position`).
-  Now: full create/update/delete against the real API, an Open/Close
-  voting toggle, and a Login Activity section (stat tiles for successful
-  logins, failed logins, failed 2FA codes, locked accounts, unauthorized
-  admin attempts, plus a recent-events table).
-- **`Results.jsx` — full rewrite.** No longer touches `mockApi` or pads
-  vote counts with a fake `+287`. Abstain votes are now real, counted data
-  from the database.
-- **`VoteConfirm.jsx` / `VoteSubmitted.jsx` — full rewrite.** Voting now
-  calls the real `/api/vote` endpoint and the receipt shown afterward is
-  the actual database record (receipt code, timestamp, selected candidate
-  or "Abstained"), not a client-generated random hash.
-- **`VoterDashboard.jsx` — full rewrite.** Dropped the two fabricated
-  election/referendum cards that weren't backed by any real data. Now
-  shows the one real election, its live open/closed status, and disables
-  "Cast Ballot" when voting isn't open.
-- **`TwoFactorSetup.jsx`** now displays your actual TOTP secret (from the
-  backend) instead of a hardcoded fake manual-entry key.
-- **`OTPVerify.jsx`** no longer claims a code was "sent to your email" —
-  this is authenticator-app-based TOTP, not email OTP, so the copy and the
-  fake "Resend" button (replaced with "Clear & Try Again") now match how
-  the system actually works.
-- **`Register.jsx`** no longer collects a University Email the backend
-  never used, and adds a confirm-password check.
-- Fixed a couple of lowercase `maxlength` JSX attributes (should be
-  `maxLength`) that React was silently ignoring.
-
-
+If you build on this project academically, please also cite the reference
+paper above alongside this repository.

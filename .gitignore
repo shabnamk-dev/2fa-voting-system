@@ -1,24 +1,44 @@
-# Virtual Environment
-venv/
-.venv/
-env/
-ENV/
-
-# Python cache & bytecode
+# Python / Flask
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+*.pyd
 
-# Databases & local state
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Flask / Python local files
+instance/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# =========================
+# SQLite / Database
+# =========================
 *.db
 *.sqlite
 *.sqlite3
 
-# Node & Build artifacts
+# =========================
+# Node / React / Vite
+# =========================
 node_modules/
 dist/
 dist-ssr/
 build/
+.vite/
 *.local
 
 # Logs
@@ -29,21 +49,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Environment & Secret files
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# IDE & OS Junk
-.vscode/*
-!.vscode/extensions.json
+# =========================
+# IDE / Editor & OS
+# =========================
+.vscode/
 .idea/
 .DS_Store
 Thumbs.db
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+desktop.ini

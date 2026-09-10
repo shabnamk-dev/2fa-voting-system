@@ -35,9 +35,6 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   const [receipt, setReceipt] = useState(null);
-  // Until this resolves we don't know yet whether there's a valid backend
-  // session, so we hold off rendering any route guards to avoid a flash of
-  // the login page (or worse, a flash of a protected page).
   const [checkingSession, setCheckingSession] = useState(true);
 
   useEffect(() => {
@@ -49,9 +46,7 @@ export default function App() {
           setUser(toClientUser(meData));
         }
       } catch (err) {
-        // No valid backend session — user stays logged out. We intentionally
-        // do NOT fall back to any client-only/local session store: dashboards
-        // must only be reachable with a real, server-verified session.
+
         setUser(null);
       } finally {
         setCheckingSession(false);
@@ -69,7 +64,7 @@ export default function App() {
     try {
       await apiLogout();
     } catch (err) {
-      // Ignore logout API failure — we still clear local state below.
+      // Ignore logout API failure
     }
     setUser(null);
     setSelectedCandidate(null);
