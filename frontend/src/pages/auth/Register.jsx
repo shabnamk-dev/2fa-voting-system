@@ -40,7 +40,7 @@ export default function Register() {
       const loginRes = await apiLogin(username, password);
       const data = loginRes.data?.data || {};
       const attemptId = data.attempt_id;
-      const methods = data.methods || ["TOTP", "QR", "PUSH", "BIOMETRIC", "SECURITY_KEY"];
+      const methods = data.methods || ["TOTP"];
 
       if (attemptId) {
         sessionStorage.setItem("auth_attempt_id", attemptId);

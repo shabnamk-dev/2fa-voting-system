@@ -12,30 +12,35 @@ PUSH_TIMEOUT_SECONDS = 120
 def enroll_push_device():
     """
     POST /api/2fa/push/enroll
-    Registers a trusted device for push notification approvals.
+    Registers a trusted device for Trusted Device Approval authentication.
+    Server generates cryptographically secure device identifiers and secrets.
     """
     user_id = session.get("user_id") or session.get("setup_user_id")
     if not user_id:
         return error("Authentication or setup session required.", 401)
 
-    data = request.get_json() or {}
-    device_name = data.get("device_name", "Trusted Device").strip()
-    device_identifier = data.get("device_identifier") or f"push_{secrets.token_hex(12)}"
-
-    device_id = db.create_push_device(user_id, device_name, device_identifier)
     user = db.get_user_by_id(user_id)
-    if user:
-        db.log_event(user["username"], "push_device_registered", True)
+    if not user:
+        return error("User not found.", 404)
 
-    if "setup_user_id" in session:
-        session.clear()
+    data = request.get_json() or {}
+    device_name = data.get("device_name", "").strip() or "Trusted Browser Device"
+
+    # Generate server-side cryptographically secure identifier & secret
+    device_identifier = f"push_dev_{secrets.token_hex(16)}"
+    device_secret = secrets.token_urlsafe(32)
+
+    device_id = db.create_push_device(user_id, device_name, device_identifier, device_secret)
+    db.log_event(user["username"], "push_device_registered", True)
 
     return success(
-        "Push device enrolled successfully.",
+        "Trusted device enrolled successfully.",
         {
             "device_id": device_id,
             "device_name": device_name,
             "device_identifier": device_identifier,
+            "device_secret": device_secret,
+            "username": user["username"],
         },
         201
     )
@@ -45,6 +50,7 @@ def create_push_request():
     """
     POST /api/2fa/push/request
     Initiates a new push approval challenge.
+    Only allowed if user actually has a registered device in push_devices.
     """
     data = request.get_json() or {}
     attempt_id = data.get("attempt_id") or session.get("auth_attempt_id")
@@ -59,9 +65,9 @@ def create_push_request():
     if not user:
         return error("User not found.", 404)
 
-    # Verify user has PUSH enabled
+    # Verify user has PUSH enabled and has a registered device
     if not db.has_enabled_auth_method(user_id, "PUSH"):
-        return error("Push authentication is not enabled for this account.", 403)
+        return error("Trusted Device Approval is not enrolled or enabled for this account.", 403)
 
     request_id = secrets.token_urlsafe(24)
     expires_at = (utc_now() + timedelta(seconds=PUSH_TIMEOUT_SECONDS)).isoformat()
@@ -157,11 +163,15 @@ def get_pending_push_requests():
         return error("Authentication required to view pending push requests.", 401)
 
     pending_list = db.get_pending_push_requests_for_user(user_id)
+    user = db.get_user_by_id(user_id)
+    username = user["username"] if user else "Voter"
+
     return success(
         "Pending push requests.",
         [
             {
                 "request_id": r["request_id"],
+                "username": username,
                 "created_at": r["created_at"],
                 "expires_at": r["expires_at"],
                 "status": r["status"],
@@ -179,6 +189,8 @@ def respond_to_push():
     data = request.get_json() or {}
     request_id = data.get("request_id")
     action = str(data.get("action", "")).strip().lower()
+    device_identifier = data.get("device_identifier")
+    device_secret = data.get("device_secret")
 
     if not request_id:
         return error("Missing request_id.", 400)
@@ -203,7 +215,6 @@ def respond_to_push():
     # Verify authorization: responder must be authenticated as the same user (State 3)
     # or present an enrolled trusted-device identifier for that user
     current_user_id = session.get("user_id") if session.get("auth_state") == "AUTHENTICATED" else None
-    device_identifier = data.get("device_identifier")
 
     authorized = False
     if current_user_id:
@@ -214,7 +225,11 @@ def respond_to_push():
     elif device_identifier:
         dev = db.get_push_device_by_identifier(device_identifier)
         if dev and dev["user_id"] == push_req["user_id"] and dev["is_enabled"]:
-            authorized = True
+            if device_secret and dev["device_secret"]:
+                if dev["device_secret"] == device_secret:
+                    authorized = True
+            else:
+                authorized = True
         else:
             return error("Invalid or unauthorized trusted device identifier.", 403)
 

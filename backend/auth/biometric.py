@@ -53,9 +53,6 @@ def verify_biometric_registration():
 
     db.log_event(username, "biometric_registration", True)
 
-    if "setup_user_id" in session:
-        session.clear()
-
     return success(
         "Biometric authenticator registered successfully.",
         {"credential_id": cred_id, "method": "BIOMETRIC"},

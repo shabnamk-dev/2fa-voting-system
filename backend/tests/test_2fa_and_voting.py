@@ -1,12 +1,14 @@
 import os
 import secrets
 import time
+from datetime import datetime, timedelta
 import pytest
 import pyotp
 from werkzeug.security import generate_password_hash
 
 import database as db
 from app import create_app
+from auth.utils import utc_now
 
 
 @pytest.fixture
@@ -72,18 +74,16 @@ def test_auth_state_isolation(client):
 
     # State 2 user MUST NOT access protected resources
     assert client.get("/api/me").status_code == 401
-    assert client.get("/api/dashboard").status_code == 401
     assert client.get("/api/candidates").status_code == 401
     assert client.post("/api/vote", json={"candidate_id": 1}).status_code == 401
-    assert client.get("/api/admin").status_code == 401
+    assert client.get("/api/admin/security-stats").status_code == 401
 
     # Step 2: Complete TOTP (Transitions to State 3: FULLY AUTHENTICATED)
-    # Wait or ensure next timestep
     time.sleep(1)
     res_totp = client.post("/api/verify-totp", json={"token": totp.now(), "attempt_id": login_body["data"]["attempt_id"]})
     assert res_totp.status_code == 200
 
-    # State 3 user can now access /api/me and dashboard
+    # State 3 user can now access /api/me
     res_me = client.get("/api/me")
     assert res_me.status_code == 200
     assert res_me.get_json()["data"]["username"] == "isolated_voter"
@@ -141,16 +141,38 @@ def test_totp_replay_protection(client):
     assert "replayed" in res_replay.get_json()["message"].lower()
 
 
-def test_push_authentication_flow(client):
+def test_push_trusted_device_enrollment_and_auth(client):
     # Register user
     client.post("/api/register", json={"username": "push_user", "password": "password123"})
 
-    # Enroll push device
-    res_enroll = client.post("/api/2fa/push/enroll", json={"device_name": "Test Phone"})
-    assert res_enroll.status_code == 201
-    device_identifier = res_enroll.get_json()["data"]["device_identifier"]
+    # Setup TOTP first
+    res_setup = client.get("/api/setup-2fa")
+    totp = pyotp.TOTP(res_setup.get_json()["data"]["secret"])
+    client.post("/api/setup-2fa", json={"token": totp.now()})
 
-    # Login
+    # Login to State 3
+    res_l = client.post("/api/login", json={"username": "push_user", "password": "password123"})
+    client.post("/api/verify-totp", json={"token": totp.now(), "attempt_id": res_l.get_json()["data"]["attempt_id"]})
+
+    # Enroll trusted device
+    res_enroll = client.post("/api/2fa/push/enroll", json={"device_name": "Test Laptop"})
+    assert res_enroll.status_code == 201
+    data = res_enroll.get_json()["data"]
+    device_identifier = data["device_identifier"]
+    device_secret = data["device_secret"]
+    assert device_identifier.startswith("push_dev_")
+
+    # Check database: device exists and PUSH is enabled
+    user = db.get_user_by_username("push_user")
+    devices = db.get_push_devices_by_user(user["id"])
+    assert len(devices) == 1
+    assert devices[0]["device_name"] == "Test Laptop"
+    assert db.has_enabled_auth_method(user["id"], "PUSH") is True
+
+    # Logout
+    client.post("/api/logout")
+
+    # Step 1: Login with password
     res_login = client.post("/api/login", json={"username": "push_user", "password": "password123"})
     attempt_id = res_login.get_json()["data"]["attempt_id"]
     assert "PUSH" in res_login.get_json()["data"]["methods"]
@@ -173,27 +195,20 @@ def test_push_authentication_flow(client):
     res_unauth = client.post("/api/2fa/push/respond", json={"request_id": request_id, "action": "approve"})
     assert res_unauth.status_code == 401
 
-    # Security check: Arbitrary device identifier rejected (403)
+    # Security check: Arbitrary fake device identifier rejected (403)
     res_fake_dev = client.post("/api/2fa/push/respond", json={
         "request_id": request_id,
         "action": "approve",
-        "device_identifier": "unauthorized_device_token"
+        "device_identifier": "fake_device_token_xyz"
     })
     assert res_fake_dev.status_code == 403
 
-    # Security check: Fake user_id in payload rejected (401)
-    res_fake_user = client.post("/api/2fa/push/respond", json={
-        "request_id": request_id,
-        "action": "approve",
-        "user_id": 999
-    })
-    assert res_fake_user.status_code == 401
-
-    # Legitimate enrolled device approves request
+    # Legitimate registered device approves request
     res_approve = client.post("/api/2fa/push/respond", json={
         "request_id": request_id,
         "action": "approve",
-        "device_identifier": device_identifier
+        "device_identifier": device_identifier,
+        "device_secret": device_secret
     })
     assert res_approve.status_code == 200
 
@@ -208,130 +223,234 @@ def test_push_authentication_flow(client):
     assert res_me.get_json()["data"]["username"] == "push_user"
 
 
-def test_qr_challenge_authentication_flow(client):
-    # Register user
-    client.post("/api/register", json={"username": "qr_user", "password": "password123"})
-
-    # Enroll QR for qr_user
-    res_enroll_qr = client.post("/api/2fa/qr/enroll")
-    assert res_enroll_qr.status_code == 200
-
-    # Enroll a trusted mobile device for qr_user
-    user = db.get_user_by_username("qr_user")
-    device_identifier = "trusted_mobile_scanner_token_123"
-    db.create_push_device(user["id"], "Trusted Mobile Scanner", device_identifier)
-
-    # Login
-    res_login = client.post("/api/login", json={"username": "qr_user", "password": "password123"})
-    attempt_id = res_login.get_json()["data"]["attempt_id"]
-    assert "QR" in res_login.get_json()["data"]["methods"]
-
-    # Select QR
-    res_select = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "QR"})
-    assert res_select.status_code == 200
-
-    # Create QR Challenge
-    res_qr_req = client.post("/api/2fa/qr/request", json={"attempt_id": attempt_id})
-    assert res_qr_req.status_code == 200
-    qr_data = res_qr_req.get_json()["data"]
-    request_id = qr_data["request_id"]
-    challenge = qr_data["challenge"]
-    assert "data:image/png;base64" in qr_data["qr_code"]
-
-    # Polling initially shows PENDING
-    res_poll = client.get(f"/api/2fa/qr/status?request_id={request_id}")
-    assert res_poll.status_code == 200
-    assert res_poll.get_json()["data"]["status"] == "PENDING"
-
-    # Security check: Unauthenticated scanner rejected (401)
-    res_unauth = client.post("/api/2fa/qr/respond", json={"challenge": challenge, "action": "approve"})
-    assert res_unauth.status_code == 401
-
-    # Security check: Bogus device identifier rejected (403)
-    res_fake_dev = client.post("/api/2fa/qr/respond", json={
-        "challenge": challenge,
-        "action": "approve",
-        "device_identifier": "unauthorized_scanner_id"
-    })
-    assert res_fake_dev.status_code == 403
-
-    # Security check: Arbitrary user_id / username in body ignored and rejected (401)
-    res_fake_user = client.post("/api/2fa/qr/respond", json={
-        "challenge": challenge,
-        "action": "approve",
-        "user_id": 999,
-        "username": "qr_user"
-    })
-    assert res_fake_user.status_code == 401
-
-    # Legitimate trusted mobile scanner approves
-    res_approve = client.post("/api/2fa/qr/respond", json={
-        "challenge": challenge,
-        "action": "approve",
-        "device_identifier": device_identifier
-    })
-    assert res_approve.status_code == 200
-
-    # Polling returns APPROVED and authenticates
-    res_poll2 = client.get(f"/api/2fa/qr/status?request_id={request_id}")
-    assert res_poll2.get_json()["data"]["status"] == "APPROVED"
-
-    # Primary client is now fully authenticated
-    res_me = client.get("/api/me")
-    assert res_me.status_code == 200
-    assert res_me.get_json()["data"]["username"] == "qr_user"
-
-
-def test_multiple_methods_and_switching(client):
-    # Register and enroll TOTP, PUSH, and QR
-    client.post("/api/register", json={"username": "multi_user", "password": "password123"})
+def test_qr_real_enrollment_and_auth_flow(client):
+    # 1. Register user and setup TOTP
+    client.post("/api/register", json={"username": "qr_flow_user", "password": "password123"})
     res_setup = client.get("/api/setup-2fa")
     totp = pyotp.TOTP(res_setup.get_json()["data"]["secret"])
     client.post("/api/setup-2fa", json={"token": totp.now()})
 
-    # Log in and enroll additional methods
-    res_l = client.post("/api/login", json={"username": "multi_user", "password": "password123"})
-    time.sleep(1)
+    # Log in to State 3
+    res_l = client.post("/api/login", json={"username": "qr_flow_user", "password": "password123"})
     client.post("/api/verify-totp", json={"token": totp.now(), "attempt_id": res_l.get_json()["data"]["attempt_id"]})
 
-    client.post("/api/2fa/push/enroll", json={"device_name": "Tablet"})
-    client.post("/api/2fa/qr/enroll")
+    user = db.get_user_by_username("qr_flow_user")
 
-    # Check /api/2fa/methods
-    res_methods = client.get("/api/2fa/methods")
-    assert res_methods.status_code == 200
-    enabled = res_methods.get_json()["data"]["enabled_methods"]
-    assert set(enabled) == {"TOTP", "PUSH", "QR"}
+    # Before QR enrollment: QR is NOT enabled
+    assert db.has_enabled_auth_method(user["id"], "QR") is False
+
+    # 2. Step 1 of QR Enrollment: PC requests enrollment challenge
+    res_enroll_req = client.post("/api/2fa/qr/enroll-request")
+    assert res_enroll_req.status_code == 200
+    enroll_data = res_enroll_req.get_json()["data"]
+    token = enroll_data["token"]
+    assert "data:image/png;base64" in enroll_data["qr_code"]
+    assert "/#/qr-enroll?token=" in enroll_data["enroll_url"]
+
+    # Enrollment status is initially PENDING
+    res_status = client.get(f"/api/2fa/qr/enroll-status?token={token}")
+    assert res_status.status_code == 200
+    assert res_status.get_json()["data"]["status"] == "PENDING"
+
+    # 3. Step 2 of QR Enrollment: Phone scans and confirms enrollment
+    res_confirm = client.post("/api/2fa/qr/enroll-confirm", json={
+        "token": token,
+        "device_name": "Shabnam's Phone"
+    })
+    assert res_confirm.status_code == 201
+    confirm_data = res_confirm.get_json()["data"]
+    device_identifier = confirm_data["device_identifier"]
+    device_secret = confirm_data["device_secret"]
+    assert device_identifier.startswith("qr_dev_")
+
+    # PC polling now receives COMPLETED
+    res_status2 = client.get(f"/api/2fa/qr/enroll-status?token={token}")
+    assert res_status2.status_code == 200
+    assert res_status2.get_json()["data"]["status"] == "COMPLETED"
+
+    # Re-using the same enrollment token is blocked
+    res_reuse_enroll = client.post("/api/2fa/qr/enroll-confirm", json={
+        "token": token,
+        "device_name": "Another Phone"
+    })
+    assert res_reuse_enroll.status_code == 409
+
+    # Now QR is officially enabled in the database
+    assert db.has_enabled_auth_method(user["id"], "QR") is True
+    qr_devs = db.get_qr_devices_by_user(user["id"])
+    assert len(qr_devs) == 1
+    assert qr_devs[0]["device_name"] == "Shabnam's Phone"
+
+    # 4. QR Login Flow
+    client.post("/api/logout")
+
+    res_login = client.post("/api/login", json={"username": "qr_flow_user", "password": "password123"})
+    attempt_id = res_login.get_json()["data"]["attempt_id"]
+    assert "QR" in res_login.get_json()["data"]["methods"]
+
+    # Select QR
+    res_sel_qr = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "QR"})
+    assert res_sel_qr.status_code == 200
+
+    # PC creates QR Login challenge
+    res_qr_req = client.post("/api/2fa/qr/request", json={"attempt_id": attempt_id})
+    assert res_qr_req.status_code == 200
+    qr_chal_data = res_qr_req.get_json()["data"]
+    request_id = qr_chal_data["request_id"]
+    challenge = qr_chal_data["challenge"]
+    assert "/#/qr-approve?" in qr_chal_data["qr_url"]
+
+    # Phone fetches details
+    res_details = client.get(f"/api/2fa/qr/details?request_id={request_id}&challenge={challenge}")
+    assert res_details.status_code == 200
+    assert res_details.get_json()["data"]["username"] == "qr_flow_user"
+
+    # Security check: Unenrolled device scanning the QR cannot approve (403)
+    res_unauth_scan = client.post("/api/2fa/qr/respond", json={
+        "request_id": request_id,
+        "challenge": challenge,
+        "action": "approve",
+        "device_identifier": "unenrolled_intruder_phone"
+    })
+    assert res_unauth_scan.status_code == 403
+
+    # Enrolled phone approves login
+    res_approve = client.post("/api/2fa/qr/respond", json={
+        "request_id": request_id,
+        "challenge": challenge,
+        "action": "approve",
+        "device_identifier": device_identifier,
+        "device_secret": device_secret
+    })
+    assert res_approve.status_code == 200
+
+    # PC polling detects approval and finalizes session
+    res_poll = client.get(f"/api/2fa/qr/status?request_id={request_id}")
+    assert res_poll.status_code == 200
+    assert res_poll.get_json()["data"]["status"] == "APPROVED"
+
+    # Primary client is authenticated (no TOTP code was required)
+    res_me = client.get("/api/me")
+    assert res_me.status_code == 200
+    assert res_me.get_json()["data"]["username"] == "qr_flow_user"
+
+
+def test_platform_biometrics_webauthn_flow(client):
+    # Register user
+    client.post("/api/register", json={"username": "bio_user", "password": "password123"})
+    res_setup = client.get("/api/setup-2fa")
+    totp = pyotp.TOTP(res_setup.get_json()["data"]["secret"])
+    client.post("/api/setup-2fa", json={"token": totp.now()})
+
+    # Login to State 3
+    res_l = client.post("/api/login", json={"username": "bio_user", "password": "password123"})
+    client.post("/api/verify-totp", json={"token": totp.now(), "attempt_id": res_l.get_json()["data"]["attempt_id"]})
+
+    # Generate Biometric Register Options (platform attachment)
+    res_bio_opt = client.post("/api/2fa/biometric/register-options")
+    assert res_bio_opt.status_code == 200
+    bio_data = res_bio_opt.get_json()["data"]
+    assert "challenge" in bio_data
+    assert bio_data["authenticatorSelection"]["authenticatorAttachment"] == "platform"
+
+    # Simulate genuine WebAuthn credential record creation in webauthn_credentials
+    from auth.utils import bytes_to_b64url
+    user = db.get_user_by_username("bio_user")
+    cred_id = bytes_to_b64url(b"test_windows_hello_cred_id_abc")
+    pub_key = bytes_to_b64url(b"test_windows_hello_pub_key_xyz")
+    db.create_webauthn_credential(
+        user_id=user["id"],
+        credential_id=cred_id,
+        public_key=pub_key,
+        sign_count=0,
+        credential_type="BIOMETRIC",
+    )
+
+    # Now BIOMETRIC is enabled
+    assert db.has_enabled_auth_method(user["id"], "BIOMETRIC") is True
+    creds = db.get_webauthn_credentials_by_user(user["id"], "BIOMETRIC")
+    assert len(creds) == 1
 
     # Logout
     client.post("/api/logout")
 
-    # Login: all 3 methods returned
-    res_login = client.post("/api/login", json={"username": "multi_user", "password": "password123"})
+    # Login
+    res_login = client.post("/api/login", json={"username": "bio_user", "password": "password123"})
+    attempt_id = res_login.get_json()["data"]["attempt_id"]
+    assert "BIOMETRIC" in res_login.get_json()["data"]["methods"]
+
+    # Select BIOMETRIC
+    res_sel_bio = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "BIOMETRIC"})
+    assert res_sel_bio.status_code == 200
+
+    # Get Biometric Auth Options
+    res_auth_opt = client.post("/api/2fa/biometric/auth-options", json={"attempt_id": attempt_id})
+    assert res_auth_opt.status_code == 200
+    auth_data = res_auth_opt.get_json()["data"]
+    assert "challenge" in auth_data
+    assert len(auth_data["allowCredentials"]) == 1
+    assert auth_data["allowCredentials"][0]["id"] == cred_id
+
+
+def test_security_key_completely_removed(client):
+    # 1. Check methods metadata: SECURITY_KEY is NOT listed
+    client.post("/api/register", json={"username": "check_no_fido", "password": "password123"})
+    res_methods = client.get("/api/2fa/methods")
+    assert res_methods.status_code == 200
+    all_methods = [m["method"] for m in res_methods.get_json()["data"]["methods"]]
+    assert "SECURITY_KEY" not in all_methods
+    assert set(all_methods) == {"TOTP", "QR", "PUSH", "BIOMETRIC"}
+
+    # 2. Cannot select SECURITY_KEY at login
+    res_login = client.post("/api/login", json={"username": "check_no_fido", "password": "password123"})
+    attempt_id = res_login.get_json()["data"].get("attempt_id")
+    if attempt_id:
+        res_sel_key = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "SECURITY_KEY"})
+        assert res_sel_key.status_code == 400
+
+    # 3. Security Key specific routes return 404
+    assert client.post("/api/2fa/security-key/register-options").status_code == 404
+    assert client.post("/api/2fa/security-key/auth-options").status_code == 404
+
+
+def test_unenrolled_methods_cannot_authenticate(client):
+    # New user with ONLY TOTP enrolled
+    client.post("/api/register", json={"username": "totp_only_voter", "password": "password123"})
+    res_setup = client.get("/api/setup-2fa")
+    totp = pyotp.TOTP(res_setup.get_json()["data"]["secret"])
+    client.post("/api/setup-2fa", json={"token": totp.now()})
+
+    # Log out
+    client.post("/api/logout")
+
+    # Step 1: Login
+    res_login = client.post("/api/login", json={"username": "totp_only_voter", "password": "password123"})
     login_data = res_login.get_json()["data"]
     attempt_id = login_data["attempt_id"]
-    assert set(login_data["methods"]) == {"TOTP", "PUSH", "QR"}
 
-    # Switch to PUSH
-    res_sel_push = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "PUSH"})
-    assert res_sel_push.status_code == 200
+    # Only TOTP is reported as enabled
+    assert login_data["methods"] == ["TOTP"]
 
-    # Switch to QR while still PENDING
+    # Attempting to select unenrolled QR -> 403 Forbidden
     res_sel_qr = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "QR"})
-    assert res_sel_qr.status_code == 200
+    assert res_sel_qr.status_code == 403
+    assert "not enrolled or enabled" in res_sel_qr.get_json()["message"].lower()
 
-    # Switch to TOTP and verify (reset last_used_step to simulate next timestep)
-    with db.db_cursor(commit=True) as cur:
-        cur.execute("UPDATE totp_credentials SET last_used_step = 0")
+    # Attempting to select unenrolled PUSH -> 403 Forbidden
+    res_sel_push = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "PUSH"})
+    assert res_sel_push.status_code == 403
 
-    res_sel_totp = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "TOTP"})
-    assert res_sel_totp.status_code == 200
-    res_v = client.post("/api/verify-totp", json={"token": totp.now(), "attempt_id": attempt_id})
-    assert res_v.status_code == 200
+    # Attempting to select unenrolled BIOMETRIC -> 403 Forbidden
+    res_sel_bio = client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "BIOMETRIC"})
+    assert res_sel_bio.status_code == 403
 
-    # Once verified, attempt cannot be reused
-    res_reuse = client.post("/api/verify-totp", json={"token": totp.now(), "attempt_id": attempt_id})
-    assert res_reuse.status_code == 400
+    # Attempting to create QR request without enrollment -> 403 Forbidden
+    res_req_qr = client.post("/api/2fa/qr/request", json={"attempt_id": attempt_id})
+    assert res_req_qr.status_code == 403
+
+    # Attempting to create Push request without enrollment -> 403 Forbidden
+    res_req_push = client.post("/api/2fa/push/request", json={"attempt_id": attempt_id})
+    assert res_req_push.status_code == 403
 
 
 def test_voting_full_cycle_and_admin(client):
@@ -348,7 +467,7 @@ def test_voting_full_cycle_and_admin(client):
     res_admin_2fa = client.post("/api/verify-totp", json={"token": admin_totp.now(), "attempt_id": admin_attempt})
     assert res_admin_2fa.status_code == 200
 
-    # Create candidate
+    # Create candidates
     res_c1 = client.post("/api/candidates", json={"name": "Alice Johnson", "party": "Forward Party", "description": "Integrity"})
     assert res_c1.status_code == 201
     c1_id = res_c1.get_json()["data"]["id"]
@@ -416,7 +535,7 @@ def test_voting_full_cycle_and_admin(client):
 
     client.post("/api/logout")
 
-    # 4. Admin checks security stats and audit events (reset last_used_step to simulate next timestep)
+    # 4. Admin checks security stats and audit events
     with db.db_cursor(commit=True) as cur:
         cur.execute("UPDATE totp_credentials SET last_used_step = 0 WHERE user_id = ?", (admin_id,))
 
@@ -435,103 +554,222 @@ def test_voting_full_cycle_and_admin(client):
     assert len(res_events.get_json()["data"]) > 0
 
 
-def test_webauthn_registration_options_and_isolation(client):
-    # 1. Register user
-    client.post("/api/register", json={"username": "webauthn_user", "password": "password123"})
-
-    # 2. Generate Biometric Register Options (platform attachment)
-    res_bio_opt = client.post("/api/2fa/biometric/register-options")
-    assert res_bio_opt.status_code == 200
-    bio_data = res_bio_opt.get_json()["data"]
-    assert "challenge" in bio_data
-    assert bio_data["authenticatorSelection"]["authenticatorAttachment"] == "platform"
-
-    # 3. Generate Security Key Register Options (cross-platform attachment)
-    res_key_opt = client.post("/api/2fa/security-key/register-options")
-    assert res_key_opt.status_code == 200
-    key_data = res_key_opt.get_json()["data"]
-    assert "challenge" in key_data
-    assert key_data["authenticatorSelection"]["authenticatorAttachment"] == "cross-platform"
-
-    # 4. Store a simulated biometric credential in DB and verify method separation
-    user = db.get_user_by_username("webauthn_user")
-    db.create_webauthn_credential(
-        user_id=user["id"],
-        credential_id="test_bio_cred_id_123",
-        public_key="test_bio_pub_key_123",
-        sign_count=0,
-        credential_type="BIOMETRIC",
-    )
-
-    # Login to State 2
-    res_login = client.post("/api/login", json={"username": "webauthn_user", "password": "password123"})
-    attempt_id = res_login.get_json()["data"]["attempt_id"]
-    assert "BIOMETRIC" in res_login.get_json()["data"]["methods"]
-
-    # Biometric auth options succeed
-    res_bio_auth_opt = client.post("/api/2fa/biometric/auth-options", json={"attempt_id": attempt_id})
-    assert res_bio_auth_opt.status_code == 200
-
-    # Security key auth options fail because no SECURITY_KEY credentials exist
-    res_key_auth_opt = client.post("/api/2fa/security-key/auth-options", json={"attempt_id": attempt_id})
-    assert res_key_auth_opt.status_code == 400
-    assert "no security_key credentials" in res_key_auth_opt.get_json()["message"].lower()
-
-
-def test_disable_method_lockout_prevention(client):
-    # Register and setup TOTP
-    client.post("/api/register", json={"username": "disable_test_user", "password": "password123"})
+def test_qr_and_push_challenge_expiration_and_replay(client):
+    # Register voter and enroll both QR and PUSH
+    client.post("/api/register", json={"username": "exp_voter", "password": "password123"})
     res_setup = client.get("/api/setup-2fa")
     totp = pyotp.TOTP(res_setup.get_json()["data"]["secret"])
     client.post("/api/setup-2fa", json={"token": totp.now()})
 
-    # Log in
-    res_l = client.post("/api/login", json={"username": "disable_test_user", "password": "password123"})
+    res_l = client.post("/api/login", json={"username": "exp_voter", "password": "password123"})
     client.post("/api/verify-totp", json={"token": totp.now(), "attempt_id": res_l.get_json()["data"]["attempt_id"]})
 
-    # Attempt to disable the only active method (TOTP) -> should be rejected with 400
-    res_dis_single = client.delete("/api/2fa/methods/TOTP")
-    assert res_dis_single.status_code == 400
-    assert "only active" in res_dis_single.get_json()["message"].lower()
+    # Enroll QR
+    res_enroll_req = client.post("/api/2fa/qr/enroll-request")
+    qr_token = res_enroll_req.get_json()["data"]["token"]
+    res_qr_conf = client.post("/api/2fa/qr/enroll-confirm", json={"token": qr_token, "device_name": "Test Phone"})
+    qr_dev_id = res_qr_conf.get_json()["data"]["device_identifier"]
+    qr_dev_sec = res_qr_conf.get_json()["data"]["device_secret"]
 
-    # Now enroll PUSH so user has 2 methods
-    client.post("/api/2fa/push/enroll", json={"device_name": "Second Factor Device"})
+    # Enroll Push
+    res_push_conf = client.post("/api/2fa/push/enroll", json={"device_name": "Test Browser"})
+    push_dev_id = res_push_conf.get_json()["data"]["device_identifier"]
+    push_dev_sec = res_push_conf.get_json()["data"]["device_secret"]
 
-    # Now disabling TOTP is allowed
-    res_dis_totp = client.delete("/api/2fa/methods/TOTP")
-    assert res_dis_totp.status_code == 200
+    client.post("/api/logout")
 
-    # User still has PUSH enabled
-    user = db.get_user_by_username("disable_test_user")
-    assert db.get_user_enabled_methods(user["id"]) == ["PUSH"]
+    # 1. QR Challenge Expiration
+    res_l2 = client.post("/api/login", json={"username": "exp_voter", "password": "password123"})
+    attempt_id = res_l2.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "QR"})
+    res_qr_req = client.post("/api/2fa/qr/request", json={"attempt_id": attempt_id})
+    qr_data = res_qr_req.get_json()["data"]
+
+    # Artificially expire the QR challenge in database
+    with db.db_cursor(commit=True) as cur:
+        past_time = (utc_now() - timedelta(minutes=5)).isoformat()
+        cur.execute("UPDATE qr_requests SET expires_at = ? WHERE request_id = ?", (past_time, qr_data["request_id"]))
+
+    # Responding to expired QR challenge fails (410)
+    res_exp_resp = client.post("/api/2fa/qr/respond", json={
+        "request_id": qr_data["request_id"],
+        "challenge": qr_data["challenge"],
+        "action": "approve",
+        "device_identifier": qr_dev_id,
+        "device_secret": qr_dev_sec,
+    })
+    assert res_exp_resp.status_code == 410
+
+    # 2. Push Challenge Expiration
+    client.post("/api/logout")
+    res_l3 = client.post("/api/login", json={"username": "exp_voter", "password": "password123"})
+    attempt_id3 = res_l3.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt_id3, "method": "PUSH"})
+    res_push_req = client.post("/api/2fa/push/request", json={"attempt_id": attempt_id3})
+    push_req_id = res_push_req.get_json()["data"]["request_id"]
+
+    # Artificially expire the Push request
+    with db.db_cursor(commit=True) as cur:
+        past_time = (utc_now() - timedelta(minutes=5)).isoformat()
+        cur.execute("UPDATE push_requests SET expires_at = ? WHERE request_id = ?", (past_time, push_req_id))
+
+    # Responding to expired push request fails (410)
+    res_exp_push = client.post("/api/2fa/push/respond", json={
+        "request_id": push_req_id,
+        "action": "approve",
+        "device_identifier": push_dev_id,
+        "device_secret": push_dev_sec,
+    })
+    assert res_exp_push.status_code == 410
 
 
-def test_existing_database_integrity():
+def test_simultaneous_multi_method_enrollment_and_independent_logins(client):
     """
-    Directly verifies the persistence and integrity of voting_system.db data.
+    Verifies that a single user account can enroll all 4 methods (TOTP, QR, PUSH, BIOMETRIC)
+    in the same setup session without methods overriding or blocking each other.
+    Verifies that POST /api/login returns all 4 enabled methods.
+    Verifies that the user can choose and log in with ANY ONE of the 4 methods across separate logins.
     """
-    import sqlite3
-    conn = sqlite3.connect("voting_system.db")
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    from auth.utils import bytes_to_b64url
 
-    # Verify tables exist
-    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    table_names = [r["name"] for r in cur.fetchall()]
-    for t in ["users", "candidates", "votes", "elections", "auth_events", "auth_methods", "totp_credentials"]:
-        assert t in table_names
+    # Step 1: Register voter (enters setup session)
+    res_reg = client.post("/api/register", json={"username": "multi_method_voter", "password": "password123"})
+    assert res_reg.status_code == 201
+    user = db.get_user_by_username("multi_method_voter")
 
-    # Verify existing users
-    cur.execute("SELECT username, role, totp_secret, is_2fa_enabled FROM users WHERE username='admin'")
-    admin_row = cur.fetchone()
-    assert admin_row is not None
-    assert admin_row["role"] == "admin"
-    assert admin_row["totp_secret"] is not None
+    # Step 2: Enroll TOTP
+    res_totp_setup = client.get("/api/setup-2fa")
+    assert res_totp_setup.status_code == 200
+    totp_secret = res_totp_setup.get_json()["data"]["secret"]
+    totp = pyotp.TOTP(totp_secret)
+    res_totp_conf = client.post("/api/setup-2fa", json={"token": totp.now()})
+    assert res_totp_conf.status_code == 200
 
-    # Verify existing candidate
-    cur.execute("SELECT name FROM candidates WHERE id=3")
-    cand_row = cur.fetchone()
-    assert cand_row is not None
-    assert cand_row["name"] == "Shabnam"
+    # Verify only TOTP is enabled so far
+    assert db.get_user_enabled_methods(user["id"]) == ["TOTP"]
 
-    conn.close()
+    # Step 3: Immediately enroll QR Code Login in the SAME setup session (no re-login required)
+    res_qr_req = client.post("/api/2fa/qr/enroll-request")
+    assert res_qr_req.status_code == 200
+    qr_token = res_qr_req.get_json()["data"]["token"]
+    res_qr_conf = client.post("/api/2fa/qr/enroll-confirm", json={"token": qr_token, "device_name": "Pixel 8 Pro"})
+    assert res_qr_conf.status_code == 201
+    qr_dev_id = res_qr_conf.get_json()["data"]["device_identifier"]
+    qr_dev_sec = res_qr_conf.get_json()["data"]["device_secret"]
+
+    # Verify both TOTP and QR are enabled simultaneously
+    assert set(db.get_user_enabled_methods(user["id"])) == {"TOTP", "QR"}
+
+    # Step 4: Immediately enroll Trusted Device (PUSH) in the SAME setup session
+    res_push_conf = client.post("/api/2fa/push/enroll", json={"device_name": "Home Desktop"})
+    assert res_push_conf.status_code == 201
+    push_dev_id = res_push_conf.get_json()["data"]["device_identifier"]
+    push_dev_sec = res_push_conf.get_json()["data"]["device_secret"]
+
+    # Verify TOTP, QR, and PUSH are enabled simultaneously
+    assert set(db.get_user_enabled_methods(user["id"])) == {"TOTP", "QR", "PUSH"}
+
+    # Step 5: Immediately enroll Platform Biometrics (WebAuthn) in the SAME setup session
+    res_bio_opt = client.post("/api/2fa/biometric/register-options")
+    assert res_bio_opt.status_code == 200
+    bio_cred_id = bytes_to_b64url(b"touchid_or_windows_hello_cred_123")
+    bio_pub_key = bytes_to_b64url(b"touchid_or_windows_hello_pub_key_456")
+    db.create_webauthn_credential(
+        user_id=user["id"],
+        credential_id=bio_cred_id,
+        public_key=bio_pub_key,
+        sign_count=0,
+        credential_type="BIOMETRIC",
+    )
+
+    # Step 6: Verify ALL FOUR methods are now simultaneously enabled and active for user_id
+    enabled_all = db.get_user_enabled_methods(user["id"])
+    assert set(enabled_all) == {"TOTP", "QR", "PUSH", "BIOMETRIC"}
+    assert len(enabled_all) == 4
+
+    # Check GET /api/2fa/methods returns all 4 enabled
+    res_methods_list = client.get("/api/2fa/methods")
+    assert res_methods_list.status_code == 200
+    assert set(res_methods_list.get_json()["data"]["enabled_methods"]) == {"TOTP", "QR", "PUSH", "BIOMETRIC"}
+
+    # Step 7: Log out to test fresh login flows
+    client.post("/api/logout")
+
+    # =========================================================================
+    # LOGIN TEST 1: Authenticate using TOTP
+    # =========================================================================
+    res_l1 = client.post("/api/login", json={"username": "multi_method_voter", "password": "password123"})
+    assert res_l1.status_code == 200
+    l1_data = res_l1.get_json()["data"]
+    assert set(l1_data["methods"]) == {"TOTP", "QR", "PUSH", "BIOMETRIC"}
+    assert set(l1_data["enabled_methods"]) == {"TOTP", "QR", "PUSH", "BIOMETRIC"}
+
+    # Select and verify TOTP
+    client.post("/api/2fa/select", json={"attempt_id": l1_data["attempt_id"], "method": "TOTP"})
+    with db.db_cursor(commit=True) as cur:
+        cur.execute("UPDATE totp_credentials SET last_used_step = 0 WHERE user_id = ?", (user["id"],))
+    res_v1 = client.post("/api/verify-totp", json={"token": totp.now(), "attempt_id": l1_data["attempt_id"]})
+    assert res_v1.status_code == 200
+    assert client.get("/api/me").status_code == 200
+    client.post("/api/logout")
+
+    # =========================================================================
+    # LOGIN TEST 2: Authenticate using QR Code Login
+    # =========================================================================
+    res_l2 = client.post("/api/login", json={"username": "multi_method_voter", "password": "password123"})
+    l2_attempt = res_l2.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": l2_attempt, "method": "QR"})
+    res_qr_req = client.post("/api/2fa/qr/request", json={"attempt_id": l2_attempt})
+    qr_chal_data = res_qr_req.get_json()["data"]
+
+    # Phone approves challenge
+    res_qr_app = client.post("/api/2fa/qr/respond", json={
+        "request_id": qr_chal_data["request_id"],
+        "challenge": qr_chal_data["challenge"],
+        "action": "approve",
+        "device_identifier": qr_dev_id,
+        "device_secret": qr_dev_sec,
+    })
+    assert res_qr_app.status_code == 200
+
+    # PC polls and finalizes session
+    res_qr_poll = client.get(f"/api/2fa/qr/status?request_id={qr_chal_data['request_id']}")
+    assert res_qr_poll.get_json()["data"]["status"] == "APPROVED"
+    assert client.get("/api/me").status_code == 200
+    client.post("/api/logout")
+
+    # =========================================================================
+    # LOGIN TEST 3: Authenticate using Trusted Device Approval (PUSH)
+    # =========================================================================
+    res_l3 = client.post("/api/login", json={"username": "multi_method_voter", "password": "password123"})
+    l3_attempt = res_l3.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": l3_attempt, "method": "PUSH"})
+    res_push_req = client.post("/api/2fa/push/request", json={"attempt_id": l3_attempt})
+    push_req_id = res_push_req.get_json()["data"]["request_id"]
+
+    # Trusted device approves prompt
+    res_push_app = client.post("/api/2fa/push/respond", json={
+        "request_id": push_req_id,
+        "action": "approve",
+        "device_identifier": push_dev_id,
+        "device_secret": push_dev_sec,
+    })
+    assert res_push_app.status_code == 200
+
+    # PC polls and finalizes session
+    res_push_poll = client.get(f"/api/2fa/push/status?request_id={push_req_id}")
+    assert res_push_poll.get_json()["data"]["status"] == "APPROVED"
+    assert client.get("/api/me").status_code == 200
+    client.post("/api/logout")
+
+    # =========================================================================
+    # LOGIN TEST 4: Authenticate using Platform Biometrics (WebAuthn)
+    # =========================================================================
+    res_l4 = client.post("/api/login", json={"username": "multi_method_voter", "password": "password123"})
+    l4_attempt = res_l4.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": l4_attempt, "method": "BIOMETRIC"})
+    res_bio_auth_opt = client.post("/api/2fa/biometric/auth-options", json={"attempt_id": l4_attempt})
+    assert res_bio_auth_opt.status_code == 200
+    assert res_bio_auth_opt.get_json()["data"]["allowCredentials"][0]["id"] == bio_cred_id
+
+

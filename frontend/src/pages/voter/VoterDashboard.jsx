@@ -138,6 +138,17 @@ export default function VoterDashboard({ user }) {
                   You can cast exactly one ballot for this election. Once submitted, it can't be changed.
                 </p>
               </div>
+
+              <div className="pt-2 border-t border-outline/50 mt-1">
+                <button
+                  type="button"
+                  onClick={() => navigate("/2fa-setup")}
+                  className="w-full bg-surface-container hover:bg-surface-variant text-primary border border-outline font-label-md text-label-md px-3 py-2 uppercase tracking-wider flex items-center justify-center gap-1.5 transition-none cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-base">shield</span>
+                  Manage 2FA Methods
+                </button>
+              </div>
             </div>
           </div>
         </div>

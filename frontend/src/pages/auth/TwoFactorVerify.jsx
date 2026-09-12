@@ -1,19 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 import {
-  getSetup2FA,
-  confirmSetup2FA,
   verifyTOTP,
   createPushRequest,
   getPushStatus,
-  respondToPush,
   createQRChallenge,
   getQRStatus,
-  respondToQR,
   getBiometricAuthOptions,
   verifyBiometricAuth,
-  getSecurityKeyAuthOptions,
-  verifySecurityKeyAuth,
+  listUserMethods,
   getMe,
 } from "../../services/api";
 import { performWebAuthnAuthentication } from "../../services/webauthn";
@@ -22,37 +17,30 @@ const METHODS = [
   {
     id: "TOTP",
     title: "Authenticator App (TOTP)",
-    subtitle: "Enter the 6-digit dynamic code from Google Authenticator or Authy",
+    subtitle: "Enter 6-digit code from Google Authenticator, Authy, etc.",
     icon: "pin",
     badge: "6-Digit Code",
   },
   {
     id: "QR",
-    title: "QR Code",
-    subtitle: "Scan a dynamic one-time cryptographic QR from your mobile phone",
+    title: "QR Code Login",
+    subtitle: "Scan dynamic screen challenge with your enrolled mobile phone",
     icon: "qr_code_2",
     badge: "Mobile Scan",
   },
   {
     id: "PUSH",
-    title: "Push Notification",
-    subtitle: "Receive a real-time instant login prompt on your registered trusted device",
+    title: "Trusted Device Approval",
+    subtitle: "Approve login prompt from your registered trusted device",
     icon: "notifications_active",
     badge: "Device Prompt",
   },
   {
     id: "BIOMETRIC",
     title: "Platform Biometrics",
-    subtitle: "Touch ID, Windows Hello, Fingerprint, or Face Unlock via WebAuthn",
+    subtitle: "WebAuthn — Windows Hello, Touch ID, Fingerprint, or Face Unlock",
     icon: "fingerprint",
     badge: "WebAuthn",
-  },
-  {
-    id: "SECURITY_KEY",
-    title: "Hardware Security Key",
-    subtitle: "Physical YubiKey, Google Titan Key, or FIDO2 USB / NFC token",
-    icon: "key",
-    badge: "FIDO2",
   },
 ];
 
@@ -62,87 +50,62 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
 
   const attemptId = location.state?.attempt_id || sessionStorage.getItem("auth_attempt_id");
   const username = location.state?.username || sessionStorage.getItem("auth_username") || "";
+  const initialEnabledMethods = location.state?.methods || [];
 
-  // Retrieve last used 2FA method strictly scoped to this account
-  const lastUsedKey = username ? `last_used_2fa_${username}` : null;
-  const lastUsedMethod = lastUsedKey ? (localStorage.getItem(lastUsedKey) || "") : "";
+  const [enabledMethods, setEnabledMethods] = useState(
+    Array.isArray(initialEnabledMethods) ? initialEnabledMethods.map((m) => m.toUpperCase()) : []
+  );
 
   const [selectedMethod, setSelectedMethod] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   // TOTP State
-  const isFirstTimeTotp = !lastUsedMethod || lastUsedMethod !== "TOTP";
-  const [totpMode, setTotpMode] = useState(isFirstTimeTotp ? "setup" : "verify"); // "setup" | "verify"
   const [otpCode, setOtpCode] = useState("");
-  const [totpSetupData, setTotpSetupData] = useState(null);
-  const [totpSetupLoading, setTotpSetupLoading] = useState(false);
 
   // Push State
   const [pushRequestId, setPushRequestId] = useState(null);
-  const [pushStatus, setPushStatus] = useState("idle"); // idle | waiting | approved | denied | expired
+  const [pushStatus, setPushStatus] = useState("idle");
   const [pushExpiresIn, setPushExpiresIn] = useState(120);
   const pushPollTimer = useRef(null);
 
   // QR State
   const [qrRequestId, setQrRequestId] = useState(null);
-  const [qrChallenge, setQrChallenge] = useState(null);
   const [qrImageData, setQrImageData] = useState(null);
-  const [qrStatus, setQrStatus] = useState("idle"); // idle | waiting | approved | denied | expired
+  const [qrStatus, setQrStatus] = useState("idle");
   const [qrExpiresIn, setQrExpiresIn] = useState(120);
   const qrPollTimer = useRef(null);
 
-  // Biometric / Security Key State
-  const [webAuthnStatus, setWebAuthnStatus] = useState("idle");
+  // Biometric State
+  const [biometricStatus, setBiometricStatus] = useState("idle");
 
-  const loadTotpSetupData = useCallback(async () => {
-    setError("");
-    setTotpSetupLoading(true);
-    try {
-      const res = await getSetup2FA();
-      const data = res.data?.data;
-      if (data?.qr_code) {
-        setTotpSetupData(data);
-      } else {
-        const sec = data?.secret || "JBSWY3DPEHPK3PXP";
-        const otpAuthUri = `otpauth://totp/SecureVotingSystem:${username || "Voter"}?secret=${sec}&issuer=SecureVotingSystem`;
-        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpAuthUri)}`;
-        setTotpSetupData({
-          username: username || "Voter",
-          secret: sec,
-          qr_code: qrUrl,
-        });
-      }
-    } catch (_err) {
-      const sec = "JBSWY3DPEHPK3PXP";
-      const otpAuthUri = `otpauth://totp/SecureVotingSystem:${username || "Voter"}?secret=${sec}&issuer=SecureVotingSystem`;
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpAuthUri)}`;
-      setTotpSetupData({
-        username: username || "Voter",
-        secret: sec,
-        qr_code: qrUrl,
-      });
-    } finally {
-      setTotpSetupLoading(false);
-    }
-  }, [username]);
-
-
-  // Automatically load TOTP setup data if entering in setup mode
+  // Fetch enabled methods if not passed through state
   useEffect(() => {
-    if (selectedMethod === "TOTP" || isFirstTimeTotp) {
-      loadTotpSetupData();
-    }
-  }, [isFirstTimeTotp, loadTotpSetupData, selectedMethod]);
+    const fetchMethods = async () => {
+      if (enabledMethods.length === 0) {
+        try {
+          const res = await listUserMethods();
+          const list = res.data?.data?.enabled_methods || [];
+          setEnabledMethods(list.map((m) => m.toUpperCase()));
+        } catch (_err) {
+          // Default to TOTP if unable to fetch
+        }
+      }
+    };
+    fetchMethods();
+  }, [enabledMethods.length]);
 
-  const finishAuth = useCallback(async (verifiedMethod) => {
-    if (verifiedMethod && lastUsedKey) {
-      localStorage.setItem(lastUsedKey, verifiedMethod);
-    }
+  // Clean up timers on unmount
+  useEffect(() => {
+    return () => {
+      if (pushPollTimer.current) clearInterval(pushPollTimer.current);
+      if (qrPollTimer.current) clearInterval(qrPollTimer.current);
+    };
+  }, []);
 
+  const finishAuth = useCallback(async () => {
     sessionStorage.removeItem("auth_attempt_id");
-    
-    // Default voter fallback user
+
     const clientUser = {
       studentId: username || "STU1001",
       username: username || "STU1001",
@@ -160,25 +123,17 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
         clientUser.hasVoted = !!meData.has_voted;
       }
     } catch (_err) {
-      // Backend session wasn't elevated by real factor verify (simulation)
+      // Fallback to default
     }
 
     if (onAuthSuccess) {
       onAuthSuccess(clientUser);
     }
     navigate(clientUser.role === "admin" ? "/admin" : "/dashboard", { replace: true });
-  }, [lastUsedKey, navigate, onAuthSuccess, username]);
-
-  // Clean up polling intervals on unmount or method switch
-  useEffect(() => {
-    return () => {
-      if (pushPollTimer.current) clearInterval(pushPollTimer.current);
-      if (qrPollTimer.current) clearInterval(qrPollTimer.current);
-    };
-  }, []);
+  }, [navigate, onAuthSuccess, username]);
 
   // -------------------------------------------------------------
-  // 1. TOTP Ceremony
+  // 1. TOTP Ceremony (Keep Existing Unchanged)
   // -------------------------------------------------------------
   const handleVerifyTOTP = async (e) => {
     e.preventDefault();
@@ -191,140 +146,165 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
 
     setLoading(true);
     try {
-      let verified = false;
-      
-      // Try setup confirmation first if in setup mode
-      if (totpMode === "setup") {
-        try {
-          await confirmSetup2FA(token);
-          verified = true;
-        } catch (_cErr) {
-          // If setup fails, will try verifyTOTP below
-        }
-      }
-
-      // Try verifyTOTP
-      if (!verified) {
-        try {
-          await verifyTOTP(token, attemptId);
-          verified = true;
-        } catch (vErr) {
-          // If verify returned 400 (e.g. not configured yet), fallback to confirmSetup2FA
-          if (vErr.response?.status === 400 || vErr.response?.status === 401) {
-            await confirmSetup2FA(token);
-            verified = true;
-          } else {
-            throw vErr;
-          }
-        }
-      }
-
-      await finishAuth("TOTP");
+      await verifyTOTP(token, attemptId);
+      await finishAuth();
     } catch (err) {
-      setError(err.response?.data?.message || err.message || "Invalid authenticator code.");
+      setError(err.response?.data?.message || "Invalid TOTP verification code.");
     } finally {
       setLoading(false);
     }
   };
 
   // -------------------------------------------------------------
-  // 2. Push Notification Ceremony
+  // 2. QR Code Login Ceremony
   // -------------------------------------------------------------
-  const startPushChallenge = useCallback(() => {
+  const startQRChallenge = useCallback(async () => {
     setError("");
-    setPushStatus("waiting");
-    setPushExpiresIn(120);
-    if (pushPollTimer.current) clearInterval(pushPollTimer.current);
-    pushPollTimer.current = setInterval(() => {
-      setPushExpiresIn((prev) => {
-        if (prev <= 1) {
-          clearInterval(pushPollTimer.current);
-          setPushStatus("expired");
-          setError("Push notification prompt expired. Please try again.");
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, []);
-
-
-  // -------------------------------------------------------------
-  // 3. QR Code Challenge Ceremony
-  // -------------------------------------------------------------
-  const startQRChallenge = useCallback(() => {
-    setError("");
+    setLoading(true);
     setQrStatus("waiting");
-    setQrExpiresIn(120);
-    // Generate a preview QR challenge
-    const previewUri = `voting2fa://challenge?session=${attemptId || "demo"}&t=${Date.now()}`;
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(previewUri)}`;
-    setQrImageData(qrUrl);
-
-    if (qrPollTimer.current) clearInterval(qrPollTimer.current);
-    qrPollTimer.current = setInterval(() => {
-      setQrExpiresIn((prev) => {
-        if (prev <= 1) {
-          clearInterval(qrPollTimer.current);
-          setQrStatus("expired");
-          setError("QR code challenge expired. Please refresh.");
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, [attemptId]);
-
-
-  // -------------------------------------------------------------
-  // 4. Biometric Authentication Ceremony (Touch ID / Windows Hello / Face ID)
-  // -------------------------------------------------------------
-  const startBiometricAuth = async () => {
-    setError("");
-    setLoading(true);
-    setWebAuthnStatus("prompting");
-    setTimeout(() => {
-      setLoading(false);
-      setWebAuthnStatus("idle");
-    }, 1200);
-  };
-
-  // -------------------------------------------------------------
-  // 5. Hardware Security Key Ceremony (YubiKey / FIDO2 USB Key)
-  // -------------------------------------------------------------
-  const startSecurityKeyAuth = async () => {
-    setError("");
-    setLoading(true);
-    setWebAuthnStatus("prompting");
-    setTimeout(() => {
-      setLoading(false);
-      setWebAuthnStatus("idle");
-    }, 1200);
-  };
-
-  // Method Selection Handler
-  const handleSelectMethod = (methodId) => {
-    setSelectedMethod(methodId);
-    setError("");
-    if (pushPollTimer.current) clearInterval(pushPollTimer.current);
     if (qrPollTimer.current) clearInterval(qrPollTimer.current);
 
-    if (methodId === "TOTP") {
-      if (totpMode === "setup" || isFirstTimeTotp) {
-        setTotpMode("setup");
-        loadTotpSetupData();
+    try {
+      const res = await createQRChallenge(attemptId);
+      const data = res.data?.data;
+      if (data) {
+        setQrRequestId(data.request_id);
+        setQrImageData(data.qr_code);
+        setQrExpiresIn(data.expires_in_seconds || 120);
+
+        // Start polling for mobile scan and approval
+        qrPollTimer.current = setInterval(async () => {
+          try {
+            const statusRes = await getQRStatus(data.request_id);
+            const statusData = statusRes.data?.data;
+            if (statusData?.status === "APPROVED") {
+              clearInterval(qrPollTimer.current);
+              setQrStatus("approved");
+              setTimeout(() => {
+                finishAuth();
+              }, 600);
+            } else if (statusData?.status === "DENIED") {
+              clearInterval(qrPollTimer.current);
+              setQrStatus("denied");
+              setError("Login request was denied from your mobile device.");
+            } else if (statusData?.status === "EXPIRED") {
+              clearInterval(qrPollTimer.current);
+              setQrStatus("expired");
+              setError("QR login challenge expired. Please generate a new code.");
+            }
+          } catch (_err) {
+            // Keep polling
+          }
+        }, 1500);
       }
-    } else if (methodId === "PUSH") {
-      startPushChallenge();
-    } else if (methodId === "QR") {
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to generate QR login challenge.");
+      setQrStatus("idle");
+    } finally {
+      setLoading(false);
+    }
+  }, [attemptId, finishAuth]);
+
+  useEffect(() => {
+    if (selectedMethod === "QR" && qrStatus === "idle") {
       startQRChallenge();
     }
+  }, [selectedMethod, qrStatus, startQRChallenge]);
+
+  // -------------------------------------------------------------
+  // 3. Trusted Device Approval Ceremony
+  // -------------------------------------------------------------
+  const startPushChallenge = useCallback(async () => {
+    setError("");
+    setLoading(true);
+    setPushStatus("waiting");
+    if (pushPollTimer.current) clearInterval(pushPollTimer.current);
+
+    try {
+      const res = await createPushRequest(attemptId);
+      const data = res.data?.data;
+      if (data) {
+        setPushRequestId(data.request_id);
+        setPushExpiresIn(data.expires_in_seconds || 120);
+
+        // Start polling for approval from registered device
+        pushPollTimer.current = setInterval(async () => {
+          try {
+            const statusRes = await getPushStatus(data.request_id);
+            const statusData = statusRes.data?.data;
+            if (statusData?.status === "APPROVED") {
+              clearInterval(pushPollTimer.current);
+              setPushStatus("approved");
+              setTimeout(() => {
+                finishAuth();
+              }, 600);
+            } else if (statusData?.status === "DENIED") {
+              clearInterval(pushPollTimer.current);
+              setPushStatus("denied");
+              setError("Login request was denied by your trusted device.");
+            } else if (statusData?.status === "EXPIRED") {
+              clearInterval(pushPollTimer.current);
+              setPushStatus("expired");
+              setError("Push approval request expired.");
+            }
+          } catch (_err) {
+            // Keep polling
+          }
+        }, 1500);
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to initiate trusted device approval request.");
+      setPushStatus("idle");
+    } finally {
+      setLoading(false);
+    }
+  }, [attemptId, finishAuth]);
+
+  useEffect(() => {
+    if (selectedMethod === "PUSH" && pushStatus === "idle") {
+      startPushChallenge();
+    }
+  }, [selectedMethod, pushStatus, startPushChallenge]);
+
+  // -------------------------------------------------------------
+  // 4. Platform Biometrics (WebAuthn) Ceremony
+  // -------------------------------------------------------------
+  const startBiometricAuthentication = async () => {
+    setError("");
+    setLoading(true);
+    setBiometricStatus("prompting");
+
+    try {
+      const optionsRes = await getBiometricAuthOptions(attemptId);
+      const options = optionsRes.data?.data;
+      const credential = await performWebAuthnAuthentication(options);
+      await verifyBiometricAuth(credential, attemptId);
+      setBiometricStatus("success");
+      setTimeout(() => {
+        finishAuth();
+      }, 500);
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          err.message ||
+          "Biometric verification was cancelled or failed."
+      );
+      setBiometricStatus("idle");
+    } finally {
+      setLoading(false);
+    }
   };
+
+  useEffect(() => {
+    if (selectedMethod === "BIOMETRIC" && biometricStatus === "idle") {
+      startBiometricAuthentication();
+    }
+  }, [selectedMethod, biometricStatus]);
 
   return (
     <div className="w-full flex-grow flex flex-col">
       <main className="flex-grow flex items-center justify-center py-stack-lg px-margin-page">
-        <div className="max-w-2xl w-full border border-outline bg-surface-container-lowest flex flex-col">
+        <div className="max-w-xl w-full border border-outline bg-surface-container-lowest flex flex-col">
           {/* Header */}
           <div className="bg-surface-container border-b border-outline p-stack-md flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -338,83 +318,81 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
                 Two-Factor Verification
               </h1>
             </div>
-            <span className="text-[11px] font-mono uppercase bg-surface-container-highest px-2 py-0.5 border border-outline text-text-secondary">
-              Step 2 of 2
+            <span className="font-mono text-xs font-bold text-text-secondary">
+              {username ? `Voter: ${username}` : "Identity Challenge"}
             </span>
           </div>
 
-          {/* Error Alert */}
+          {/* Alerts */}
           {error && (
             <div className="px-stack-lg pt-stack-md">
-              <div className="w-full p-3 bg-error-container border border-error text-error text-sm font-bold flex items-start justify-between gap-2">
-                <div className="flex items-start gap-2">
-                  <span className="material-symbols-outlined text-base mt-0.5">error</span>
-                  <div>{error}</div>
-                </div>
-                {error.toLowerCase().includes("expired") && (
-                  <Link
-                    to="/login"
-                    className="ml-2 px-2.5 py-1 bg-error text-white text-xs uppercase tracking-wider font-bold rounded hover:opacity-90 whitespace-nowrap"
-                  >
-                    Log In Again
-                  </Link>
-                )}
+              <div className="w-full p-3 bg-error-container border border-error text-error text-sm font-bold flex items-start gap-2">
+                <span className="material-symbols-outlined text-base">error</span>
+                <div>{error}</div>
               </div>
             </div>
           )}
 
-          {/* Main Body */}
+          {/* Body Content */}
           <div className="p-stack-lg flex flex-col gap-stack-lg">
+            {/* STEP 1: METHOD SELECTION */}
             {!selectedMethod ? (
-              /* ============================================================ */
-              /* METHOD SELECTION SCREEN (With "Last Used" Highlighting)     */
-              /* ============================================================ */
               <div className="flex flex-col gap-stack-md">
-                <div className="text-center mb-2">
+                <div className="text-center mb-1">
                   <h2 className="font-headline-lg text-headline-lg text-primary mb-1 font-semibold">
-                    Choose 2FA Method
+                    Select 2FA Method
                   </h2>
                   <p className="font-body-md text-body-md text-text-secondary">
-                    Select any secondary verification factor to complete your login.
+                    Choose an enrolled authentication method to complete your login.
                   </p>
                 </div>
 
                 <div className="grid grid-cols-1 gap-3">
                   {METHODS.map((m) => {
-                    const isLastUsed = lastUsedMethod === m.id;
+                    const isEnrolled = enabledMethods.includes(m.id);
                     return (
                       <button
                         key={m.id}
                         type="button"
-                        onClick={() => handleSelectMethod(m.id)}
-                        className={`text-left p-4 border transition-all flex items-start justify-between gap-4 cursor-pointer relative ${
-                          isLastUsed
-                            ? "border-primary bg-primary/5 hover:bg-primary/10 ring-1 ring-primary shadow-sm"
-                            : "border-outline hover:border-primary hover:bg-surface-main"
+                        disabled={!isEnrolled}
+                        onClick={() => {
+                          if (isEnrolled) {
+                            setSelectedMethod(m.id);
+                            setError("");
+                          }
+                        }}
+                        className={`text-left p-4 border transition-all flex items-start justify-between gap-4 ${
+                          isEnrolled
+                            ? "border-outline hover:border-primary hover:bg-surface-main cursor-pointer"
+                            : "border-outline/40 bg-surface-container/30 opacity-60 cursor-not-allowed"
                         }`}
                       >
-                        {/* Top Right "Last Used" Badge */}
-                        {isLastUsed && (
-                          <div className="absolute top-2.5 right-3 flex items-center gap-1 bg-primary text-on-primary text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded shadow-sm">
-                            <span className="material-symbols-outlined text-[12px]">star</span>
-                            <span>Last Used</span>
-                          </div>
-                        )}
-
-                        <div className="flex items-start gap-3 w-full pr-16">
+                        <div className="flex items-start gap-3">
                           <div
-                            className={`p-2 border ${
-                              isLastUsed
-                                ? "bg-primary text-on-primary border-primary"
-                                : "bg-surface-container border-outline text-primary"
-                            } mt-0.5`}
+                            className={`p-2 border mt-0.5 ${
+                              isEnrolled
+                                ? "bg-surface-container border-outline text-primary"
+                                : "bg-surface-container-low border-outline/40 text-text-secondary"
+                            }`}
                           >
                             <span className="material-symbols-outlined text-2xl">{m.icon}</span>
                           </div>
                           <div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-headline-sm font-semibold text-primary">{m.title}</span>
-                              <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 border border-outline text-text-secondary bg-surface-container-lowest">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`font-headline-sm font-semibold ${
+                                  isEnrolled ? "text-primary" : "text-text-secondary"
+                                }`}
+                              >
+                                {m.title}
+                              </span>
+                              <span
+                                className={`text-[10px] uppercase font-bold px-1.5 py-0.5 border ${
+                                  isEnrolled
+                                    ? "border-outline text-text-secondary"
+                                    : "border-outline/40 text-text-secondary/60"
+                                }`}
+                              >
                                 {m.badge}
                               </span>
                             </div>
@@ -422,238 +400,176 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
                           </div>
                         </div>
 
-                        {!isLastUsed && (
-                          <span className="material-symbols-outlined text-text-secondary mt-2">
-                            arrow_forward
-                          </span>
-                        )}
+                        <div className="mt-1 flex flex-col items-end">
+                          {isEnrolled ? (
+                            <span className="inline-flex items-center gap-1 text-secondary text-xs font-bold uppercase tracking-wider">
+                              <span className="material-symbols-outlined text-sm">verified</span>
+                              Available
+                            </span>
+                          ) : (
+                            <span className="text-[10px] uppercase font-bold px-2 py-0.5 bg-surface-container border border-outline/50 text-text-secondary">
+                              Setup Required
+                            </span>
+                          )}
+                        </div>
                       </button>
                     );
                   })}
                 </div>
 
-                <div className="border-t border-outline pt-4 text-center mt-2">
-                  <Link to="/login" className="text-xs text-text-secondary hover:text-primary underline">
-                    ← Back to Password Login
+                <div className="border-t border-outline pt-4 text-center mt-2 flex justify-between items-center text-xs text-text-secondary">
+                  <Link to="/2fa-setup" className="hover:text-primary underline font-semibold">
+                    Configure / Enroll 2FA Methods
+                  </Link>
+                  <Link to="/login" className="hover:text-primary underline font-semibold">
+                    ← Back to Login
                   </Link>
                 </div>
               </div>
             ) : (
-              /* ============================================================ */
-              /* METHOD VERIFICATION CEREMONIES                               */
-              /* ============================================================ */
+              /* STEP 2: ACTIVE CEREMONY VIEW */
               <div className="flex flex-col gap-stack-md">
-                {/* 1. TOTP Verification & Setup */}
+                {/* 1. TOTP Verify */}
                 {selectedMethod === "TOTP" && (
-                  <div className="flex flex-col gap-stack-md max-w-sm mx-auto w-full">
-                    {totpMode === "setup" ? (
-                      /* First Time Setup View (QR Code + Secret + Verify Code) */
-                      <div className="flex flex-col items-center text-center gap-3">
-                        <div className="text-center">
-                          <span className="material-symbols-outlined text-4xl text-primary mb-1">qr_code_2</span>
-                          <h2 className="font-headline-md font-semibold text-primary">Set Up Authenticator App</h2>
-                          <p className="text-xs text-text-secondary mt-1">
-                            Scan this QR code with Google Authenticator, Authy, or your password manager.
-                          </p>
-                        </div>
+                  <form onSubmit={handleVerifyTOTP} className="flex flex-col gap-4 text-center">
+                    <div>
+                      <span className="material-symbols-outlined text-4xl text-primary mb-1">pin</span>
+                      <h2 className="font-headline-md font-semibold text-primary">Enter TOTP Code</h2>
+                      <p className="text-xs text-text-secondary mt-1">
+                        Enter the 6-digit verification code generated by your authenticator app.
+                      </p>
+                    </div>
 
-                        {/* QR Code Container */}
+                    <div className="max-w-xs mx-auto w-full flex flex-col gap-3">
+                      <input
+                        maxLength="6"
+                        placeholder="000000"
+                        type="text"
+                        value={otpCode}
+                        onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
+                        required
+                        autoFocus
+                        className="w-full border border-outline p-3 text-center font-mono text-3xl tracking-widest bg-surface-container-lowest focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      >
+                        <span className="material-symbols-outlined text-base">lock_open</span>
+                        {loading ? "Verifying Code..." : "Verify & Sign In"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* 2. QR Code Login Ceremony */}
+                {selectedMethod === "QR" && (
+                  <div className="flex flex-col gap-4 text-center items-center py-2">
+                    <div>
+                      <span className="material-symbols-outlined text-4xl text-primary mb-1">qr_code_2</span>
+                      <h2 className="font-headline-md font-semibold text-primary">QR Code Login</h2>
+                      <p className="text-xs text-text-secondary max-w-sm mx-auto mt-1">
+                        Scan this dynamic one-time challenge QR with your enrolled mobile device and tap "Approve".
+                      </p>
+                    </div>
+
+                    {loading && !qrImageData ? (
+                      <div className="py-12 flex flex-col items-center">
+                        <span className="material-symbols-outlined text-4xl text-primary animate-spin mb-2">progress_activity</span>
+                        <p className="text-sm text-text-secondary">Generating login challenge...</p>
+                      </div>
+                    ) : qrImageData ? (
+                      <div className="flex flex-col items-center gap-3">
                         <div className="border-4 border-primary p-2 bg-white shadow-sm">
-                          {totpSetupLoading ? (
-                            <div className="w-48 h-48 flex items-center justify-center text-xs text-text-secondary">
-                              Loading setup QR...
-                            </div>
-                          ) : totpSetupData?.qr_code ? (
-                            <img className="w-48 h-48 object-contain" alt="Authenticator QR" src={totpSetupData.qr_code} />
-                          ) : (
-                            <div className="w-48 h-48 flex flex-col items-center justify-center text-xs text-text-secondary p-2">
-                              <span className="material-symbols-outlined text-3xl mb-1 text-primary">key</span>
-                              <span>Manual Secret:</span>
-                              <span className="font-mono font-bold mt-1 text-primary text-[11px] select-all bg-surface-container p-1 border border-outline">
-                                {totpSetupData?.secret || "JBSWY3DPEHPK3PXP"}
-                              </span>
-                            </div>
-                          )}
+                          <img className="w-52 h-52 object-contain" alt="QR Login Challenge" src={qrImageData} />
                         </div>
 
-                        {totpSetupData?.secret && (
-                          <div className="w-full text-left bg-surface-container border border-outline p-2.5 text-[11px]">
-                            <span className="text-text-secondary block font-semibold mb-0.5">Manual Key:</span>
-                            <span className="font-mono font-bold text-primary select-all break-all">
-                              {totpSetupData.secret}
-                            </span>
+                        {qrStatus === "approved" ? (
+                          <div className="text-xs text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
+                            <span className="material-symbols-outlined text-sm">check_circle</span>
+                            Approved! Signing in...
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 text-xs text-secondary font-bold uppercase tracking-wider animate-pulse">
+                            <span className="w-2.5 h-2.5 rounded-full bg-secondary" />
+                            Waiting for scan and approval on phone...
                           </div>
                         )}
 
-                        <form onSubmit={handleVerifyTOTP} className="flex flex-col gap-3 w-full mt-1">
-                          <label className="text-xs text-text-secondary text-left font-medium block">
-                            Enter the 6-digit code from your authenticator:
-                          </label>
-                          <input
-                            autoFocus
-                            maxLength="6"
-                            placeholder="000000"
-                            type="text"
-                            value={otpCode}
-                            onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
-                            required
-                            className="w-full border border-outline p-3 text-center font-mono text-3xl tracking-widest bg-surface-container-lowest focus:outline-none focus:ring-1 focus:ring-primary"
-                          />
-                          <button
-                            type="submit"
-                            disabled={loading || otpCode.length !== 6}
-                            className="w-full bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 disabled:opacity-50"
-                          >
-                            <span className="material-symbols-outlined text-base">check_circle</span>
-                            {loading ? "Verifying..." : "Verify & Activate"}
-                          </button>
-                        </form>
+                        <button
+                          type="button"
+                          onClick={startQRChallenge}
+                          className="text-xs text-text-secondary hover:text-primary underline mt-1 cursor-pointer"
+                        >
+                          ↻ Refresh QR Challenge
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
 
-                        {!isFirstTimeTotp && (
-                          <button
-                            type="button"
-                            onClick={() => setTotpMode("verify")}
-                            className="text-xs text-text-secondary hover:text-primary underline mt-1"
-                          >
-                            Already saved the code? Enter 6-digit code directly
-                          </button>
-                        )}
+                {/* 3. Trusted Device Approval Ceremony */}
+                {selectedMethod === "PUSH" && (
+                  <div className="flex flex-col gap-4 text-center items-center py-4">
+                    <span className="material-symbols-outlined text-5xl text-primary animate-bounce">
+                      notifications_active
+                    </span>
+                    <div>
+                      <h2 className="font-headline-md font-semibold text-primary">Approval Prompt Dispatched</h2>
+                      <p className="text-xs text-text-secondary max-w-sm mx-auto mt-1">
+                        A login challenge was dispatched to your registered trusted device. Please review and tap "Approve Login".
+                      </p>
+                    </div>
+
+                    {pushStatus === "approved" ? (
+                      <div className="text-xs text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
+                        <span className="material-symbols-outlined text-sm">check_circle</span>
+                        Approved! Signing in...
                       </div>
                     ) : (
-                      /* Subsequent Login View (Enter 6-digit code directly) */
-                      <div className="flex flex-col gap-stack-md">
-                        <div className="text-center">
-                          <span className="material-symbols-outlined text-4xl text-primary mb-1">pin</span>
-                          <h2 className="font-headline-md font-semibold text-primary">Enter Authenticator Code</h2>
-                          <p className="text-xs text-text-secondary mt-1">
-                            Open your authenticator app and enter the 6-digit code.
-                          </p>
-                        </div>
-
-                        <form onSubmit={handleVerifyTOTP} className="flex flex-col gap-3">
-                          <input
-                            autoFocus
-                            maxLength="6"
-                            placeholder="000000"
-                            type="text"
-                            value={otpCode}
-                            onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
-                            required
-                            className="w-full border border-outline p-3 text-center font-mono text-3xl tracking-widest bg-surface-container-lowest focus:outline-none focus:ring-1 focus:ring-primary"
-                          />
-                          <button
-                            type="submit"
-                            disabled={loading || otpCode.length !== 6}
-                            className="w-full bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 disabled:opacity-50"
-                          >
-                            <span className="material-symbols-outlined text-base">check_circle</span>
-                            {loading ? "Verifying..." : "Verify & Sign In"}
-                          </button>
-                        </form>
-
-                        {/* Scan again / Reconfigure Option */}
-                        <div className="pt-2 text-center border-t border-outline/50">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTotpMode("setup");
-                              loadTotpSetupData();
-                            }}
-                            className="text-xs text-text-secondary hover:text-primary underline cursor-pointer mx-auto block"
-                          >
-                            Lost your authenticator? Scan QR or view key
-                          </button>
-                        </div>
+                      <div className="flex items-center gap-2 text-xs text-secondary font-bold uppercase tracking-wider animate-pulse">
+                        <span className="w-2.5 h-2.5 rounded-full bg-secondary" />
+                        Awaiting approval from your device...
                       </div>
                     )}
-                  </div>
-                )}
 
-                {/* 2. QR Code Verification */}
-                {selectedMethod === "QR" && (
-                  <div className="flex flex-col items-center gap-stack-md text-center">
-                    <h2 className="font-headline-md font-semibold text-primary">Scan Dynamic QR Code</h2>
-                    <p className="text-xs text-text-secondary max-w-sm">
-                      Scan this one-time challenge QR code with your mobile authenticator or camera.
-                    </p>
-
-                    <div className="border-4 border-primary p-3 bg-white shadow-sm">
-                      {qrImageData ? (
-                        <img className="w-52 h-52 object-contain" alt="Authentication QR" src={qrImageData} />
-                      ) : (
-                        <div className="w-52 h-52 flex items-center justify-center text-xs text-text-secondary">
-                          Generating dynamic QR...
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2 text-xs font-mono text-text-secondary">
-                      <span className="inline-block w-2 h-2 rounded-full bg-secondary animate-pulse" />
-                      <span>Waiting for mobile scan ({qrExpiresIn}s)...</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* 3. Push Notification Verification */}
-                {selectedMethod === "PUSH" && (
-                  <div className="flex flex-col items-center gap-stack-md text-center py-2">
-                    <div className="w-16 h-16 rounded-full bg-primary/10 border border-primary flex items-center justify-center text-primary mb-1">
-                      <span className="material-symbols-outlined text-3xl animate-bounce">notifications_active</span>
-                    </div>
-                    <h2 className="font-headline-md font-semibold text-primary">Push Notification Sent</h2>
-                    <p className="text-xs text-text-secondary max-w-sm">
-                      A login approval prompt has been dispatched to your trusted registered smartphone. Please tap <strong>Approve</strong>.
-                    </p>
-
-                    <div className="flex items-center gap-2 text-xs font-mono text-text-secondary">
-                      <span className="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
-                      <span>Awaiting device response ({pushExpiresIn}s)...</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* 4. Platform Biometric Verification */}
-                {selectedMethod === "BIOMETRIC" && (
-                  <div className="flex flex-col items-center gap-stack-md text-center py-4">
-                    <span className="material-symbols-outlined text-5xl text-primary">fingerprint</span>
-                    <h2 className="font-headline-md font-semibold text-primary">Platform Biometrics</h2>
-                    <p className="text-xs text-text-secondary max-w-sm">
-                      Authenticate with Touch ID, Windows Hello, or Fingerprint reader.
-                    </p>
                     <button
                       type="button"
-                      onClick={startBiometricAuth}
+                      onClick={startPushChallenge}
+                      className="text-xs text-text-secondary hover:text-primary underline mt-2 cursor-pointer"
+                    >
+                      ↻ Resend Approval Prompt
+                    </button>
+                  </div>
+                )}
+
+                {/* 4. Platform Biometrics Ceremony */}
+                {selectedMethod === "BIOMETRIC" && (
+                  <div className="flex flex-col gap-4 text-center items-center py-4">
+                    <span className="material-symbols-outlined text-5xl text-primary">fingerprint</span>
+                    <div>
+                      <h2 className="font-headline-md font-semibold text-primary">Platform Biometrics</h2>
+                      <p className="text-xs text-text-secondary max-w-sm mx-auto mt-1">
+                        Complete your Windows Hello, Touch ID, or platform biometric prompt.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={startBiometricAuthentication}
                       disabled={loading}
-                      className="w-full max-w-xs bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 disabled:opacity-50"
+                      className="w-full max-w-xs mx-auto bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-sm"
                     >
                       <span className="material-symbols-outlined text-base">fingerprint</span>
-                      {loading ? "Triggering Sensor..." : "Scan Biometrics"}
+                      {loading ? "Waiting for Biometric Sensor..." : "Authenticate with Biometrics"}
                     </button>
                   </div>
                 )}
 
-                {/* 5. Hardware Security Key Verification */}
-                {selectedMethod === "SECURITY_KEY" && (
-                  <div className="flex flex-col items-center gap-stack-md text-center py-4">
-                    <span className="material-symbols-outlined text-5xl text-primary">key</span>
-                    <h2 className="font-headline-md font-semibold text-primary">Hardware Security Key</h2>
-                    <p className="text-xs text-text-secondary max-w-sm">
-                      Insert your YubiKey / FIDO2 security key and touch the gold contact point.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={startSecurityKeyAuth}
-                      disabled={loading}
-                      className="w-full max-w-xs bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      <span className="material-symbols-outlined text-base">usb</span>
-                      {loading ? "Waiting for Key Tap..." : "Tap Hardware Key"}
-                    </button>
-                  </div>
-                )}
-
-                {/* Back to Technique Selection */}
-                <div className="border-t border-outline pt-stack-md text-center mt-2">
+                {/* Back to Method Selection */}
+                <div className="border-t border-outline pt-4 text-center mt-4">
                   <button
                     type="button"
                     onClick={() => {
@@ -664,7 +580,7 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
                     }}
                     className="font-label-md text-label-md text-text-secondary hover:text-primary underline underline-offset-4 cursor-pointer"
                   >
-                    ← Choose a different 2FA method
+                    ← Choose a different authentication method
                   </button>
                 </div>
               </div>

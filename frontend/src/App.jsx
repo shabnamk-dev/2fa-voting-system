@@ -10,6 +10,9 @@ import Register from "./pages/auth/Register";
 import TwoFactorSetup from "./pages/auth/TwoFactorSetup";
 import TwoFactorVerify from "./pages/auth/TwoFactorVerify";
 import OTPVerify from "./pages/auth/OTPVerify";
+import QRApprove from "./pages/auth/QRApprove";
+import QREnroll from "./pages/auth/QREnroll";
+import DeviceApprovals from "./pages/auth/DeviceApprovals";
 
 // Voter Pages
 import VoterDashboard from "./pages/voter/VoterDashboard";
@@ -117,6 +120,18 @@ export default function App() {
               element={
                 !user ? <OTPVerify onOtpSuccess={handleLoginSuccess} /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
               }
+            />
+            <Route
+              path="/qr-approve"
+              element={<QRApprove />}
+            />
+            <Route
+              path="/qr-enroll"
+              element={<QREnroll />}
+            />
+            <Route
+              path="/device-approvals"
+              element={<DeviceApprovals />}
             />
 
             {/* Voter Protected Routes */}

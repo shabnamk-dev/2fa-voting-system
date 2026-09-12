@@ -1,7 +1,14 @@
 import axios from "axios";
 
+// Dynamically determine backend base URL so local mobile devices on the same Wi-Fi connect seamlessly
+const apiBase =
+  import.meta.env.VITE_API_URL ||
+  (typeof window !== "undefined" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1"
+    ? `http://${window.location.hostname}:5000`
+    : "http://localhost:5000");
+
 const api = axios.create({
-  baseURL: "http://localhost:5000",
+  baseURL: apiBase,
   withCredentials: true, // Flask session cookies
   headers: { "Content-Type": "application/json" },
 });
@@ -38,7 +45,7 @@ export const logout = () => api.post("/api/logout");
 
 
 // ==========================================
-// 2. TOTP (Authenticator App)
+// 2. Method 1: TOTP (Authenticator App)
 // ==========================================
 
 // GET /api/2fa/totp/setup (or /api/setup-2fa)
@@ -54,12 +61,49 @@ export const verifyTOTP = (token, attempt_id = null) =>
 
 
 // ==========================================
-// 3. Push Authentication
+// 3. Method 2: QR Code Authentication
 // ==========================================
 
-// POST /api/2fa/push/enroll - Register a trusted push device
-export const enrollPushDevice = (device_name = "Trusted Browser Device", device_identifier = null) =>
-  api.post("/api/2fa/push/enroll", { device_name, device_identifier });
+// POST /api/2fa/qr/enroll-request - Generate enrollment challenge for phone pairing
+export const enrollQRRequest = () =>
+  api.post("/api/2fa/qr/enroll-request", {});
+
+// POST /api/2fa/qr/enroll-confirm - Scanned by mobile device to pair
+export const enrollQRConfirm = (token, device_name = "Trusted Mobile Device") =>
+  api.post("/api/2fa/qr/enroll-confirm", { token, device_name });
+
+// GET /api/2fa/qr/enroll-status?token=... - Poll status of device pairing
+export const enrollQRStatus = (token) =>
+  api.get("/api/2fa/qr/enroll-status", { params: { token } });
+
+// POST /api/2fa/qr/enroll - Legacy alias
+export const enrollQR = () =>
+  api.post("/api/2fa/qr/enroll", {});
+
+// POST /api/2fa/qr/request - Request dynamic QR login challenge
+export const createQRChallenge = (attempt_id = null) =>
+  api.post("/api/2fa/qr/request", { attempt_id });
+
+// GET /api/2fa/qr/details?request_id=...&challenge=... - Get QR challenge details for mobile approval
+export const getQRDetails = (request_id, challenge = null) =>
+  api.get("/api/2fa/qr/details", { params: { request_id, challenge } });
+
+// GET /api/2fa/qr/status?request_id=... - Check QR scan/approval status
+export const getQRStatus = (request_id) =>
+  api.get("/api/2fa/qr/status", { params: { request_id } });
+
+// POST /api/2fa/qr/respond - Mobile device scan & approve/deny
+export const respondToQR = (request_id, challenge = null, action = "approve", device_identifier = null, device_secret = null) =>
+  api.post("/api/2fa/qr/respond", { request_id, challenge, action, device_identifier, device_secret });
+
+
+// ==========================================
+// 4. Method 3: Trusted Device Approval (Push)
+// ==========================================
+
+// POST /api/2fa/push/enroll - Register a trusted browser device
+export const enrollPushDevice = (device_name = "Trusted Browser Device") =>
+  api.post("/api/2fa/push/enroll", { device_name });
 
 // POST /api/2fa/push/request - Request push challenge
 export const createPushRequest = (attempt_id = null) =>
@@ -74,33 +118,12 @@ export const getPendingPushRequests = (device_identifier = null) =>
   api.get("/api/2fa/push/pending", { params: { device_identifier } });
 
 // POST /api/2fa/push/respond - Approve or Deny push challenge
-export const respondToPush = (request_id, action = "approve", device_identifier = null) =>
-  api.post("/api/2fa/push/respond", { request_id, action, device_identifier });
+export const respondToPush = (request_id, action = "approve", device_identifier = null, device_secret = null) =>
+  api.post("/api/2fa/push/respond", { request_id, action, device_identifier, device_secret });
 
 
 // ==========================================
-// 4. QR Code Authentication
-// ==========================================
-
-// POST /api/2fa/qr/enroll - Enable QR challenge method
-export const enrollQR = () =>
-  api.post("/api/2fa/qr/enroll", {});
-
-// POST /api/2fa/qr/request - Request dynamic QR challenge
-export const createQRChallenge = (attempt_id = null) =>
-  api.post("/api/2fa/qr/request", { attempt_id });
-
-// GET /api/2fa/qr/status?request_id=... - Check QR scan/approval status
-export const getQRStatus = (request_id) =>
-  api.get("/api/2fa/qr/status", { params: { request_id } });
-
-// POST /api/2fa/qr/respond - Mobile device scan & approve/deny
-export const respondToQR = (request_id, challenge = null, action = "approve", device_identifier = null) =>
-  api.post("/api/2fa/qr/respond", { request_id, challenge, action, device_identifier });
-
-
-// ==========================================
-// 5. Biometric Authentication (Platform WebAuthn)
+// 5. Method 4: Platform Biometrics (WebAuthn)
 // ==========================================
 
 // POST /api/2fa/biometric/register-options
@@ -118,27 +141,6 @@ export const getBiometricAuthOptions = (attempt_id = null) =>
 // POST /api/2fa/biometric/auth-verify
 export const verifyBiometricAuth = (credential, attempt_id = null) =>
   api.post("/api/2fa/biometric/auth-verify", { credential, attempt_id });
-
-
-// ==========================================
-// 6. Security Keys (Cross-Platform FIDO2 / YubiKey)
-// ==========================================
-
-// POST /api/2fa/security-key/register-options
-export const getSecurityKeyRegisterOptions = () =>
-  api.post("/api/2fa/security-key/register-options", {});
-
-// POST /api/2fa/security-key/register-verify
-export const verifySecurityKeyRegistration = (credential) =>
-  api.post("/api/2fa/security-key/register-verify", { credential });
-
-// POST /api/2fa/security-key/auth-options
-export const getSecurityKeyAuthOptions = (attempt_id = null) =>
-  api.post("/api/2fa/security-key/auth-options", { attempt_id });
-
-// POST /api/2fa/security-key/auth-verify
-export const verifySecurityKeyAuth = (credential, attempt_id = null) =>
-  api.post("/api/2fa/security-key/auth-verify", { credential, attempt_id });
 
 
 // ==========================================
