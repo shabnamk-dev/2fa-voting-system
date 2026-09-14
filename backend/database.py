@@ -86,8 +86,14 @@ def _migrate_votes_table(cur):
 def _migrate_2fa_data(cur):
     """
     Safely and idempotently migrate existing users who have totp_secret
-    configured into auth_methods and totp_credentials.
+    configured into auth_methods and totp_credentials, and ensure columns exist.
     """
+    # Ensure push_devices has device_secret column
+    cur.execute("PRAGMA table_info(push_devices)")
+    push_cols = [row["name"] for row in cur.fetchall()]
+    if push_cols and "device_secret" not in push_cols:
+        cur.execute("ALTER TABLE push_devices ADD COLUMN device_secret TEXT")
+
     cur.execute("SELECT id, totp_secret, is_2fa_enabled FROM users WHERE totp_secret IS NOT NULL")
     users_with_totp = cur.fetchall()
     for u in users_with_totp:
@@ -238,9 +244,41 @@ def init_db():
                 user_id           INTEGER NOT NULL,
                 device_name       TEXT NOT NULL,
                 device_identifier TEXT NOT NULL UNIQUE,
+                device_secret     TEXT,
                 is_enabled        INTEGER NOT NULL DEFAULT 1,
                 created_at        TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_used_at      TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+
+        # QR enrolled mobile devices
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS qr_devices (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id           INTEGER NOT NULL,
+                device_name       TEXT NOT NULL,
+                device_identifier TEXT NOT NULL UNIQUE,
+                device_secret     TEXT NOT NULL,
+                is_enabled        INTEGER NOT NULL DEFAULT 1,
+                created_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_used_at      TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+
+        # QR enrollment requests (pairing flow)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS qr_enrollment_requests (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id           INTEGER NOT NULL,
+                token             TEXT NOT NULL UNIQUE,
+                status            TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'COMPLETED', 'EXPIRED')),
+                created_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+                expires_at        TEXT NOT NULL,
+                completed_at      TEXT,
+                device_name       TEXT,
+                device_identifier TEXT,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
@@ -718,6 +756,10 @@ def get_user_auth_methods(user_id):
 
 
 def get_user_enabled_methods(user_id):
+    """
+    Returns the list of genuinely active and enrolled 2FA methods for a user.
+    Strictly verifies that the underlying device/credential actually exists on the server.
+    """
     with db_cursor() as cur:
         cur.execute("""
             SELECT method_type
@@ -725,17 +767,43 @@ def get_user_enabled_methods(user_id):
             WHERE user_id = ? AND is_enabled = 1
             ORDER BY id ASC
         """, (user_id,))
-        return [row["method_type"] for row in cur.fetchall()]
+        declared_methods = [row["method_type"] for row in cur.fetchall()]
+
+        valid_methods = []
+        for m in declared_methods:
+            m = m.upper()
+            if m == "TOTP":
+                cur.execute("SELECT id FROM totp_credentials WHERE user_id = ?", (user_id,))
+                if cur.fetchone():
+                    valid_methods.append("TOTP")
+                else:
+                    cur.execute("SELECT totp_secret FROM users WHERE id = ?", (user_id,))
+                    u = cur.fetchone()
+                    if u and u["totp_secret"]:
+                        valid_methods.append("TOTP")
+            elif m == "QR":
+                cur.execute("SELECT id FROM qr_devices WHERE user_id = ? AND is_enabled = 1", (user_id,))
+                if cur.fetchone():
+                    valid_methods.append("QR")
+            elif m == "PUSH":
+                cur.execute("SELECT id FROM push_devices WHERE user_id = ? AND is_enabled = 1", (user_id,))
+                if cur.fetchone():
+                    valid_methods.append("PUSH")
+            elif m == "BIOMETRIC":
+                cur.execute("SELECT id FROM webauthn_credentials WHERE user_id = ? AND credential_type = 'BIOMETRIC'", (user_id,))
+                if cur.fetchone():
+                    valid_methods.append("BIOMETRIC")
+
+        return valid_methods
 
 
 def has_enabled_auth_method(user_id, method_type):
-    with db_cursor() as cur:
-        cur.execute("""
-            SELECT id
-            FROM auth_methods
-            WHERE user_id = ? AND method_type = ? AND is_enabled = 1
-        """, (user_id, method_type))
-        return cur.fetchone() is not None
+    """
+    Returns True only if the method is enabled AND backed by a genuine credential/device registration.
+    """
+    if not method_type:
+        return False
+    return method_type.strip().upper() in get_user_enabled_methods(user_id)
 
 
 def enable_auth_method(user_id, method_type):
@@ -757,12 +825,8 @@ def disable_auth_method(user_id, method_type):
             WHERE user_id = ? AND method_type = ?
         """, (user_id, method_type))
         # Check if user has any other enabled methods left
-        cur.execute("""
-            SELECT COUNT(*) AS total
-            FROM auth_methods
-            WHERE user_id = ? AND is_enabled = 1
-        """, (user_id,))
-        if cur.fetchone()["total"] == 0:
+        enabled_now = get_user_enabled_methods(user_id)
+        if not enabled_now:
             cur.execute("UPDATE users SET is_2fa_enabled = 0 WHERE id = ?", (user_id,))
 
 
@@ -775,21 +839,20 @@ def delete_auth_method(user_id, method_type):
         if method_type == "TOTP":
             cur.execute("DELETE FROM totp_credentials WHERE user_id = ?", (user_id,))
             cur.execute("UPDATE users SET totp_secret = NULL WHERE id = ?", (user_id,))
-        elif method_type in ("BIOMETRIC", "SECURITY_KEY"):
+        elif method_type == "BIOMETRIC":
             cur.execute("""
                 DELETE FROM webauthn_credentials
-                WHERE user_id = ? AND credential_type = ?
-            """, (user_id, method_type))
+                WHERE user_id = ? AND credential_type = 'BIOMETRIC'
+            """, (user_id,))
         elif method_type == "PUSH":
             cur.execute("DELETE FROM push_devices WHERE user_id = ?", (user_id,))
+        elif method_type == "QR":
+            cur.execute("DELETE FROM qr_devices WHERE user_id = ?", (user_id,))
+            cur.execute("DELETE FROM qr_enrollment_requests WHERE user_id = ?", (user_id,))
 
         # Update legacy is_2fa_enabled if no remaining enabled methods
-        cur.execute("""
-            SELECT COUNT(*) AS total
-            FROM auth_methods
-            WHERE user_id = ? AND is_enabled = 1
-        """, (user_id,))
-        if cur.fetchone()["total"] == 0:
+        enabled_now = get_user_enabled_methods(user_id)
+        if not enabled_now:
             cur.execute("UPDATE users SET is_2fa_enabled = 0 WHERE id = ?", (user_id,))
 
 
@@ -910,13 +973,13 @@ def delete_webauthn_credential(credential_id):
 
 # --- Push Devices & Requests ---
 
-def create_push_device(user_id, device_name, device_identifier):
+def create_push_device(user_id, device_name, device_identifier, device_secret=None):
     with db_cursor(commit=True) as cur:
         cur.execute("""
-            INSERT INTO push_devices (user_id, device_name, device_identifier, is_enabled)
-            VALUES (?, ?, ?, 1)
-            ON CONFLICT(device_identifier) DO UPDATE SET device_name = excluded.device_name, is_enabled = 1
-        """, (user_id, device_name, device_identifier))
+            INSERT INTO push_devices (user_id, device_name, device_identifier, device_secret, is_enabled)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(device_identifier) DO UPDATE SET device_name = excluded.device_name, device_secret = COALESCE(excluded.device_secret, push_devices.device_secret), is_enabled = 1
+        """, (user_id, device_name, device_identifier, device_secret))
         device_id = cur.lastrowid
 
         cur.execute("""
@@ -950,12 +1013,79 @@ def remove_push_device(device_id, user_id):
                 SET is_enabled = 0
                 WHERE user_id = ? AND method_type = 'PUSH'
             """, (user_id,))
+            enabled_now = get_user_enabled_methods(user_id)
+            if not enabled_now:
+                cur.execute("UPDATE users SET is_2fa_enabled = 0 WHERE id = ?", (user_id,))
+
+
+# --- QR Enrollment & Devices ---
+
+def create_qr_enrollment_request(user_id, token, expires_at):
+    with db_cursor(commit=True) as cur:
+        cur.execute("""
+            INSERT INTO qr_enrollment_requests (user_id, token, status, expires_at)
+            VALUES (?, ?, 'PENDING', ?)
+        """, (user_id, token, expires_at))
+        return cur.lastrowid
+
+
+def get_qr_enrollment_request_by_token(token):
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM qr_enrollment_requests WHERE token = ?", (token,))
+        return cur.fetchone()
+
+
+def complete_qr_enrollment_request(token, device_name, device_identifier):
+    with db_cursor(commit=True) as cur:
+        cur.execute("""
+            UPDATE qr_enrollment_requests
+            SET status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP, device_name = ?, device_identifier = ?
+            WHERE token = ?
+        """, (device_name, device_identifier, token))
+
+
+def create_qr_device(user_id, device_name, device_identifier, device_secret):
+    with db_cursor(commit=True) as cur:
+        cur.execute("""
+            INSERT INTO qr_devices (user_id, device_name, device_identifier, device_secret, is_enabled)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(device_identifier) DO UPDATE SET device_name = excluded.device_name, device_secret = excluded.device_secret, is_enabled = 1
+        """, (user_id, device_name, device_identifier, device_secret))
+        device_id = cur.lastrowid
+
+        cur.execute("""
+            INSERT INTO auth_methods (user_id, method_type, is_enabled)
+            VALUES (?, 'QR', 1)
+            ON CONFLICT(user_id, method_type) DO UPDATE SET is_enabled = 1
+        """, (user_id,))
+        cur.execute("UPDATE users SET is_2fa_enabled = 1 WHERE id = ?", (user_id,))
+        return device_id
+
+
+def get_qr_devices_by_user(user_id):
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM qr_devices WHERE user_id = ? AND is_enabled = 1", (user_id,))
+        return cur.fetchall()
+
+
+def get_qr_device_by_identifier(device_identifier):
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM qr_devices WHERE device_identifier = ?", (device_identifier,))
+        return cur.fetchone()
+
+
+def remove_qr_device(device_id, user_id):
+    with db_cursor(commit=True) as cur:
+        cur.execute("DELETE FROM qr_devices WHERE id = ? AND user_id = ?", (device_id, user_id))
+        cur.execute("SELECT COUNT(*) AS total FROM qr_devices WHERE user_id = ? AND is_enabled = 1", (user_id,))
+        if cur.fetchone()["total"] == 0:
             cur.execute("""
-                SELECT COUNT(*) AS total
-                FROM auth_methods
-                WHERE user_id = ? AND is_enabled = 1
+                UPDATE auth_methods
+                SET is_enabled = 0
+                WHERE user_id = ? AND method_type = 'QR'
             """, (user_id,))
-            if cur.fetchone()["total"] == 0:
+            enabled_now = get_user_enabled_methods(user_id)
+            if not enabled_now:
                 cur.execute("UPDATE users SET is_2fa_enabled = 0 WHERE id = ?", (user_id,))
 
 

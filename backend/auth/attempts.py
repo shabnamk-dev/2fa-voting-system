@@ -4,7 +4,8 @@ import database as db
 from auth.utils import utc_now
 
 ATTEMPT_TTL_MINUTES = 5
-MAX_SECOND_FACTOR_FAILURES = 3
+MAX_SECOND_FACTOR_FAILURES = 6
+LOCKOUT_MINUTES = 15
 
 
 def create_attempt(user_id):
@@ -35,6 +36,16 @@ def get_valid_pending_attempt(attempt_id, user_id=None):
     if attempt["status"] != "PENDING":
         return None, f"Authentication attempt is already {attempt['status'].lower()}."
 
+    # Check account lockout
+    user = db.get_user_by_id(attempt["user_id"])
+    if user and user["locked_until"]:
+        try:
+            locked_until = datetime.fromisoformat(user["locked_until"])
+            if utc_now() < locked_until:
+                return None, "Account temporarily locked due to excessive authentication failures. Please try again later."
+        except Exception:
+            pass
+
     # Check expiration
     expires_at = datetime.fromisoformat(attempt["expires_at"])
     if utc_now() > expires_at:
@@ -47,11 +58,18 @@ def get_valid_pending_attempt(attempt_id, user_id=None):
 def record_attempt_failure(attempt_id, max_failures=MAX_SECOND_FACTOR_FAILURES):
     """
     Record a second-factor verification failure on the attempt.
-    If failures exceed max_failures, transition attempt to FAILED.
+    If failures exceed max_failures, transition attempt to FAILED and lock account.
     """
     new_count = db.increment_attempt_failed_count(attempt_id)
     if new_count >= max_failures:
         db.update_attempt_status(attempt_id, "FAILED")
+        attempt = db.get_auth_attempt(attempt_id)
+        if attempt:
+            user = db.get_user_by_id(attempt["user_id"])
+            if user:
+                locked_until = (utc_now() + timedelta(minutes=LOCKOUT_MINUTES)).isoformat()
+                db.lock_account(user["username"], locked_until)
+                db.log_event(user["username"], "account_locked_2fa_denials", False)
         return True, "Too many failed attempts. This authentication attempt has been invalidated."
     return False, None
 

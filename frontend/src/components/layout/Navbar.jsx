@@ -43,6 +43,13 @@ export default function Navbar({ user, onLogout }) {
                   >
                     Results
                   </Link>
+                  <Link
+                    to="/2fa-setup"
+                    className={`pb-3 border-b-2 transition-none text-body-md ${isActive("/2fa-setup") ? "border-on-primary text-on-primary font-bold" : "border-transparent text-slate-300 hover:text-white font-medium"
+                      }`}
+                  >
+                    2FA Security
+                  </Link>
                 </>
               ) : (
                 <>
@@ -59,6 +66,13 @@ export default function Navbar({ user, onLogout }) {
                       }`}
                   >
                     Results
+                  </Link>
+                  <Link
+                    to="/2fa-setup"
+                    className={`pb-3 border-b-2 transition-none text-body-md ${isActive("/2fa-setup") ? "border-on-primary text-on-primary font-bold" : "border-transparent text-slate-300 hover:text-white font-medium"
+                      }`}
+                  >
+                    2FA Security
                   </Link>
                 </>
               )}
@@ -115,6 +129,15 @@ export default function Navbar({ user, onLogout }) {
                     Results
                   </Link>
                 </li>
+                <li>
+                  <Link
+                    to="/2fa-setup"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={`block py-2 ${isActive("/2fa-setup") ? "font-bold text-primary" : "text-text-secondary"}`}
+                  >
+                    2FA Security
+                  </Link>
+                </li>
               </>
             ) : (
               <>
@@ -125,6 +148,24 @@ export default function Navbar({ user, onLogout }) {
                     className={`block py-2 ${isActive("/admin") ? "font-bold text-primary" : "text-text-secondary"}`}
                   >
                     Candidate Management
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    to="/results"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={`block py-2 ${isActive("/results") ? "font-bold text-primary" : "text-text-secondary"}`}
+                  >
+                    Results
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    to="/2fa-setup"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={`block py-2 ${isActive("/2fa-setup") ? "font-bold text-primary" : "text-text-secondary"}`}
+                  >
+                    2FA Security
                   </Link>
                 </li>
               </>

@@ -8,7 +8,7 @@ import auth.attempts as attempts
 
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
-ALLOWED_METHODS = ("TOTP", "PUSH", "BIOMETRIC", "SECURITY_KEY", "QR")
+ALLOWED_METHODS = ("TOTP", "PUSH", "BIOMETRIC", "QR")
 
 
 def login_user():
@@ -71,7 +71,8 @@ def login_user():
             "Please set up two-factor authentication.",
             {
                 "next": "setup-2fa",
-                "methods": []
+                "methods": [],
+                "enabled_methods": [],
             }
         )
 
@@ -79,13 +80,14 @@ def login_user():
     attempt_id = attempts.create_attempt(user["id"])
     start_pending_session(user["id"], attempt_id)
 
-    # Compatibility: if only TOTP is enabled, provide both choose-2fa structure and next hint
+    # Return all genuinely enrolled methods for that account
     return success(
         "Password verified. Please select a two-factor authentication method.",
         {
             "next": "choose-2fa",
             "attempt_id": attempt_id,
             "methods": enabled_methods,
+            "enabled_methods": enabled_methods,
         }
     )
 

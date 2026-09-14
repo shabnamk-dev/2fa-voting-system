@@ -8,7 +8,12 @@ import Navbar from "./components/layout/Navbar";
 import Login from "./pages/auth/Login";
 import Register from "./pages/auth/Register";
 import TwoFactorSetup from "./pages/auth/TwoFactorSetup";
+import TwoFactorVerify from "./pages/auth/TwoFactorVerify";
 import OTPVerify from "./pages/auth/OTPVerify";
+import QRApprove from "./pages/auth/QRApprove";
+import QREnroll from "./pages/auth/QREnroll";
+import DeviceApprovals from "./pages/auth/DeviceApprovals";
+import TrustedDeviceModal from "./components/auth/TrustedDeviceModal";
 
 // Voter Pages
 import VoterDashboard from "./pages/voter/VoterDashboard";
@@ -46,7 +51,6 @@ export default function App() {
           setUser(toClientUser(meData));
         }
       } catch (err) {
-
         setUser(null);
       } finally {
         setCheckingSession(false);
@@ -85,6 +89,9 @@ export default function App() {
         {/* Header/Nav Bar */}
         <Navbar user={user} onLogout={handleLogout} />
 
+        {/* Event-driven Trusted Device Approval Modal */}
+        <TrustedDeviceModal />
+
         <div className="flex flex-1 flex-col">
           <Routes>
             {/* Public Routes */}
@@ -101,11 +108,15 @@ export default function App() {
               }
             />
 
-            {/* Auth Setup / Verification Routes (backend session-gated) */}
+            {/* Auth Setup / Verification Routes */}
             <Route
               path="/2fa-setup"
+              element={<TwoFactorSetup onAuthSuccess={handleLoginSuccess} />}
+            />
+            <Route
+              path="/2fa-verify"
               element={
-                !user ? <TwoFactorSetup /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
+                !user ? <TwoFactorVerify onAuthSuccess={handleLoginSuccess} /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
               }
             />
             <Route
@@ -113,6 +124,18 @@ export default function App() {
               element={
                 !user ? <OTPVerify onOtpSuccess={handleLoginSuccess} /> : <Navigate to={user.role === "admin" ? "/admin" : "/dashboard"} replace />
               }
+            />
+            <Route
+              path="/qr-approve"
+              element={<QRApprove />}
+            />
+            <Route
+              path="/qr-enroll"
+              element={<QREnroll />}
+            />
+            <Route
+              path="/device-approvals"
+              element={<DeviceApprovals />}
             />
 
             {/* Voter Protected Routes */}

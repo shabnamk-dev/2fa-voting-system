@@ -92,10 +92,6 @@ def confirm_totp_setup():
     db.log_event(user["username"], "totp_setup", True)
     db.log_event(user["username"], "2fa_setup_confirmed", True)
 
-    # If this was during registration/initial setup, clear setup session so user logs in cleanly
-    if "setup_user_id" in session:
-        session.clear()
-
     return success("Two-factor authentication (TOTP) enabled successfully.")
 
 

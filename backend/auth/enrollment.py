@@ -5,10 +5,9 @@ from auth.session import login_required
 
 ALL_METHOD_METADATA = [
     {"method": "TOTP", "name": "Authenticator App (TOTP)", "description": "Time-based One-Time Password using Google Authenticator, Authy, etc."},
-    {"method": "PUSH", "name": "Push Approval", "description": "Local trusted device login approval notification"},
-    {"method": "BIOMETRIC", "name": "Biometric (Platform Authenticator)", "description": "Fingerprint, Face ID, or Windows Hello via WebAuthn"},
-    {"method": "SECURITY_KEY", "name": "Hardware Security Key", "description": "FIDO2 / YubiKey USB hardware key via WebAuthn"},
-    {"method": "QR", "name": "QR Code Challenge", "description": "Scan dynamic challenge QR with a trusted mobile device"},
+    {"method": "QR", "name": "QR Code Login", "description": "Scan dynamic challenge QR with your enrolled mobile device to approve"},
+    {"method": "PUSH", "name": "Trusted Device Approval", "description": "Approve login prompt from a registered trusted device"},
+    {"method": "BIOMETRIC", "name": "Platform Biometrics", "description": "Fingerprint, Face ID, or Windows Hello via WebAuthn"},
 ]
 
 
