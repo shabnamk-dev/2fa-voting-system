@@ -114,12 +114,21 @@ export const getPushStatus = (request_id) =>
   api.get("/api/2fa/push/status", { params: { request_id } });
 
 // GET /api/2fa/push/pending - Get pending requests for device
-export const getPendingPushRequests = (device_identifier = null) =>
-  api.get("/api/2fa/push/pending", { params: { device_identifier } });
+export const getPendingPushRequests = (device_identifier = null, device_secret = null) =>
+  api.get("/api/2fa/push/pending", { params: { device_identifier, device_secret } });
 
 // POST /api/2fa/push/respond - Approve or Deny push challenge
 export const respondToPush = (request_id, action = "approve", device_identifier = null, device_secret = null) =>
   api.post("/api/2fa/push/respond", { request_id, action, device_identifier, device_secret });
+
+// GET /api/2fa/push/devices - List enrolled trusted devices
+export const getPushDevices = () =>
+  api.get("/api/2fa/push/devices");
+
+// DELETE /api/2fa/push/devices/:id - Remove enrolled trusted device
+export const deletePushDevice = (device_id) =>
+  api.delete(`/api/2fa/push/devices/${device_id}`);
+
 
 
 // ==========================================

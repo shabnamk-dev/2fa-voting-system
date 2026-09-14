@@ -207,6 +207,12 @@ def create_qr_challenge():
     challenge = secrets.token_urlsafe(32)
     expires_at = (utc_now() + timedelta(seconds=QR_TIMEOUT_SECONDS)).isoformat()
 
+    with db.db_cursor(commit=True) as cur:
+        cur.execute(
+            "UPDATE qr_requests SET status = 'EXPIRED' WHERE attempt_id = ? AND status = 'PENDING'",
+            (attempt_id,)
+        )
+
     db.create_qr_request(attempt_id, user_id, request_id, challenge, expires_at)
     attempts.set_attempt_selected_method(attempt_id, "QR")
     db.log_event(user["username"], "qr_auth_requested", True)
@@ -305,8 +311,8 @@ def get_qr_status():
             attempts.mark_attempt_verified(attempt_id)
             if user:
                 db.log_event(user["username"], "authentication_success", True)
-                if session.get("auth_attempt_id") == attempt_id or session.get("pending_user_id") == user_id:
-                    finalize_authenticated_session(user)
+        if user and ("user_id" not in session or session.get("user_id") != user["id"]):
+            finalize_authenticated_session(user)
 
         return success(
             "Login approved!",
@@ -321,7 +327,9 @@ def get_qr_status():
         )
 
     if qr_req["status"] == "DENIED":
-        attempts.mark_attempt_failed(attempt_id)
+        attempt = db.get_auth_attempt(attempt_id)
+        if attempt and attempt["status"] == "FAILED":
+            return success("Device or account blocked due to repeated denials.", {"status": "BLOCKED"})
         return success("QR authentication was denied.", {"status": "DENIED"})
 
     if qr_req["status"] == "EXPIRED":
@@ -401,6 +409,6 @@ def respond_to_qr():
         return success("QR challenge approved successfully.")
     else:
         db.update_qr_request_status(qr_req["request_id"], "DENIED")
-        attempts.mark_attempt_failed(qr_req["attempt_id"])
+        attempts.record_attempt_failure(qr_req["attempt_id"])
         db.log_event(username, "qr_auth_denied", False)
         return success("QR challenge denied.")

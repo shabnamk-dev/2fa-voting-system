@@ -5,6 +5,8 @@ import {
   getSetup2FA,
   confirmSetup2FA,
   enrollPushDevice,
+  getPushDevices,
+  deletePushDevice,
   enrollQRRequest,
   enrollQRStatus,
   getBiometricRegisterOptions,
@@ -80,6 +82,16 @@ export default function TwoFactorSetup({ onAuthSuccess }) {
     if (ua.includes("Linux")) return "Linux Desktop (Firefox)";
     return "My Trusted Browser";
   });
+  const [enrolledPushDevices, setEnrolledPushDevices] = useState([]);
+
+  const loadPushDevices = useCallback(async () => {
+    try {
+      const res = await getPushDevices();
+      setEnrolledPushDevices(res.data?.data || []);
+    } catch (_err) {
+      setEnrolledPushDevices([]);
+    }
+  }, []);
 
   // Fetch current user's enrolled methods
   const loadMethods = useCallback(async () => {
@@ -94,7 +106,8 @@ export default function TwoFactorSetup({ onAuthSuccess }) {
     } catch (_err) {
       // Setup session might be active
     }
-  }, []);
+    loadPushDevices();
+  }, [loadPushDevices]);
 
   useEffect(() => {
     loadMethods();
@@ -224,10 +237,27 @@ export default function TwoFactorSetup({ onAuthSuccess }) {
         localStorage.setItem("voting_trusted_device_name", name);
       }
       setSelectedTechnique(null);
-      setSuccessMsg(`Trusted Device "${name}" successfully enrolled and enabled! You can enroll additional methods below or proceed to log in.`);
+      setSuccessMsg(`Trusted Device "${name}" successfully registered! In-app approval prompts will appear on this device when login approval is requested.`);
       await loadMethods();
+      await loadPushDevices();
     } catch (err) {
       setError(err.response?.data?.message || err.message || "Failed to enroll push device.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeletePushDevice = async (deviceId) => {
+    setLoading(true);
+    setError("");
+    setSuccessMsg("");
+    try {
+      await deletePushDevice(deviceId);
+      setSuccessMsg("Trusted device removed successfully.");
+      await loadPushDevices();
+      await loadMethods();
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to remove trusted device.");
     } finally {
       setLoading(false);
     }
@@ -379,9 +409,9 @@ export default function TwoFactorSetup({ onAuthSuccess }) {
                                   setSuccessMsg("");
                                 }}
                                 className="px-2.5 py-1.5 border border-outline text-text-secondary hover:text-primary hover:border-primary text-xs font-bold uppercase tracking-wider transition-none cursor-pointer"
-                                title="Re-configure / Add Device"
+                                title={m.id === "PUSH" ? "Manage Trusted Devices / Add Device" : "Re-configure Method"}
                               >
-                                Re-Enroll
+                                {m.id === "PUSH" ? "Manage Devices" : "Re-Enroll"}
                               </button>
                             </div>
                           ) : (
@@ -535,16 +565,51 @@ export default function TwoFactorSetup({ onAuthSuccess }) {
 
                 {/* 3. Trusted Device Enrollment */}
                 {selectedTechnique === "PUSH" && (
-                  <div className="flex flex-col gap-stack-md py-2 max-w-sm mx-auto w-full">
+                  <div className="flex flex-col gap-stack-md py-2 max-w-md mx-auto w-full">
                     <div className="border-b border-outline pb-2 text-center">
                       <span className="material-symbols-outlined text-4xl text-primary mb-1">notifications_active</span>
-                      <h2 className="font-headline-md font-semibold text-primary">Register Trusted Device</h2>
+                      <h2 className="font-headline-md font-semibold text-primary">Trusted Device Management</h2>
                       <p className="text-xs text-text-secondary mt-1">
-                        Register this browser as a trusted device to receive and approve login requests.
+                        A single account can register multiple trusted devices (e.g. PC, Phone, Laptop). Registered devices receive an in-app approval alert during login.
                       </p>
                     </div>
 
-                    <form onSubmit={handleActivatePush} className="flex flex-col gap-3 mt-2">
+                    {/* Enrolled Devices List */}
+                    {enrolledPushDevices.length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        <span className="text-xs font-bold uppercase tracking-wider text-text-secondary">
+                          Registered Devices ({enrolledPushDevices.length})
+                        </span>
+                        <div className="flex flex-col gap-1.5 border border-outline p-2 bg-surface-container">
+                          {enrolledPushDevices.map((dev) => (
+                            <div
+                              key={dev.id}
+                              className="flex items-center justify-between text-xs py-2 px-3 bg-surface-container-lowest border border-outline/50"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="material-symbols-outlined text-base text-primary">devices</span>
+                                <span className="font-bold text-primary">{dev.device_name}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePushDevice(dev.id)}
+                                disabled={loading}
+                                className="text-error hover:text-error/80 text-[11px] uppercase font-bold cursor-pointer transition-none"
+                                title="Remove device"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Register Current Device Form */}
+                    <form onSubmit={handleActivatePush} className="flex flex-col gap-3 mt-1 border border-outline p-4 bg-surface-container-low">
+                      <h3 className="font-bold text-xs uppercase tracking-wider text-primary">
+                        {enrolledPushDevices.length > 0 ? "Register Another Device" : "Register This Device"}
+                      </h3>
                       <div>
                         <label className="text-xs font-bold uppercase text-primary block mb-1">
                           Device Name / Label
@@ -561,10 +626,10 @@ export default function TwoFactorSetup({ onAuthSuccess }) {
                       <button
                         type="submit"
                         disabled={loading}
-                        className="w-full bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant transition-none flex items-center justify-center gap-2 mt-2 disabled:opacity-50 cursor-pointer shadow-sm"
+                        className="w-full bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant transition-none flex items-center justify-center gap-2 mt-1 disabled:opacity-50 cursor-pointer shadow-sm"
                       >
                         <span className="material-symbols-outlined text-base">phonelink_setup</span>
-                        {loading ? "Registering Device..." : "Register as Trusted Device"}
+                        {loading ? "Registering Device..." : "Register This Device"}
                       </button>
                     </form>
                   </div>

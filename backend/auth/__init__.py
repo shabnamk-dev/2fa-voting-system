@@ -21,6 +21,8 @@ from auth.push import (
     get_push_status,
     get_pending_push_requests,
     respond_to_push,
+    list_push_devices,
+    delete_push_device,
 )
 from auth.qr_auth import (
     enroll_qr_request,
@@ -75,6 +77,8 @@ auth_bp.add_url_rule("/2fa/push/request", view_func=create_push_request, methods
 auth_bp.add_url_rule("/2fa/push/status", view_func=get_push_status, methods=["GET"])
 auth_bp.add_url_rule("/2fa/push/pending", view_func=get_pending_push_requests, methods=["GET"])
 auth_bp.add_url_rule("/2fa/push/respond", view_func=respond_to_push, methods=["POST"])
+auth_bp.add_url_rule("/2fa/push/devices", view_func=list_push_devices, methods=["GET"])
+auth_bp.add_url_rule("/2fa/push/devices/<int:device_id>", view_func=delete_push_device, methods=["DELETE"])
 
 # --- Method 4: Platform Biometrics (WebAuthn) Routes ---
 auth_bp.add_url_rule("/2fa/biometric/register-options", view_func=get_biometric_register_options, methods=["POST"])

@@ -13,6 +13,7 @@ import OTPVerify from "./pages/auth/OTPVerify";
 import QRApprove from "./pages/auth/QRApprove";
 import QREnroll from "./pages/auth/QREnroll";
 import DeviceApprovals from "./pages/auth/DeviceApprovals";
+import TrustedDeviceModal from "./components/auth/TrustedDeviceModal";
 
 // Voter Pages
 import VoterDashboard from "./pages/voter/VoterDashboard";
@@ -87,6 +88,9 @@ export default function App() {
       <div className="min-h-screen flex flex-col bg-background text-text-primary">
         {/* Header/Nav Bar */}
         <Navbar user={user} onLogout={handleLogout} />
+
+        {/* Event-driven Trusted Device Approval Modal */}
+        <TrustedDeviceModal />
 
         <div className="flex flex-1 flex-col">
           <Routes>

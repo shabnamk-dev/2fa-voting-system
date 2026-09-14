@@ -162,7 +162,10 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
     setError("");
     setLoading(true);
     setQrStatus("waiting");
-    if (qrPollTimer.current) clearInterval(qrPollTimer.current);
+    if (qrPollTimer.current) {
+      clearInterval(qrPollTimer.current);
+      qrPollTimer.current = null;
+    }
 
     try {
       const res = await createQRChallenge(attemptId);
@@ -178,19 +181,35 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
             const statusRes = await getQRStatus(data.request_id);
             const statusData = statusRes.data?.data;
             if (statusData?.status === "APPROVED") {
-              clearInterval(qrPollTimer.current);
+              if (qrPollTimer.current) {
+                clearInterval(qrPollTimer.current);
+                qrPollTimer.current = null;
+              }
               setQrStatus("approved");
               setTimeout(() => {
                 finishAuth();
               }, 600);
             } else if (statusData?.status === "DENIED") {
-              clearInterval(qrPollTimer.current);
+              if (qrPollTimer.current) {
+                clearInterval(qrPollTimer.current);
+                qrPollTimer.current = null;
+              }
               setQrStatus("denied");
               setError("Login request was denied from your mobile device.");
+            } else if (statusData?.status === "BLOCKED") {
+              if (qrPollTimer.current) {
+                clearInterval(qrPollTimer.current);
+                qrPollTimer.current = null;
+              }
+              setQrStatus("blocked");
+              setError("Device or account blocked due to excessive denials.");
             } else if (statusData?.status === "EXPIRED") {
-              clearInterval(qrPollTimer.current);
+              if (qrPollTimer.current) {
+                clearInterval(qrPollTimer.current);
+                qrPollTimer.current = null;
+              }
               setQrStatus("expired");
-              setError("QR login challenge expired. Please generate a new code.");
+              setError("QR login challenge expired. Please regenerate a new code.");
             }
           } catch (_err) {
             // Keep polling
@@ -199,7 +218,7 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
       }
     } catch (err) {
       setError(err.response?.data?.message || "Failed to generate QR login challenge.");
-      setQrStatus("idle");
+      setQrStatus("error");
     } finally {
       setLoading(false);
     }
@@ -242,6 +261,10 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
               clearInterval(pushPollTimer.current);
               setPushStatus("denied");
               setError("Login request was denied by your trusted device.");
+            } else if (statusData?.status === "BLOCKED") {
+              clearInterval(pushPollTimer.current);
+              setPushStatus("blocked");
+              setError("Device or account blocked due to too many failed denials.");
             } else if (statusData?.status === "EXPIRED") {
               clearInterval(pushPollTimer.current);
               setPushStatus("expired");
@@ -254,7 +277,7 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
       }
     } catch (err) {
       setError(err.response?.data?.message || "Failed to initiate trusted device approval request.");
-      setPushStatus("idle");
+      setPushStatus("error");
     } finally {
       setLoading(false);
     }
@@ -269,7 +292,7 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
   // -------------------------------------------------------------
   // 4. Platform Biometrics (WebAuthn) Ceremony
   // -------------------------------------------------------------
-  const startBiometricAuthentication = async () => {
+  const startBiometricAuthentication = useCallback(async () => {
     setError("");
     setLoading(true);
     setBiometricStatus("prompting");
@@ -287,19 +310,19 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
       setError(
         err.response?.data?.message ||
           err.message ||
-          "Biometric verification was cancelled or failed."
+          "Biometric authentication was cancelled or failed."
       );
-      setBiometricStatus("idle");
+      setBiometricStatus("error");
     } finally {
       setLoading(false);
     }
-  };
+  }, [attemptId, finishAuth]);
 
   useEffect(() => {
     if (selectedMethod === "BIOMETRIC" && biometricStatus === "idle") {
       startBiometricAuthentication();
     }
-  }, [selectedMethod, biometricStatus]);
+  }, [selectedMethod, biometricStatus, startBiometricAuthentication]);
 
   return (
     <div className="w-full flex-grow flex flex-col">
@@ -480,6 +503,33 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
                         <span className="material-symbols-outlined text-4xl text-primary animate-spin mb-2">progress_activity</span>
                         <p className="text-sm text-text-secondary">Generating login challenge...</p>
                       </div>
+                    ) : qrStatus === "denied" || qrStatus === "expired" ? (
+                      <div className="flex flex-col items-center gap-3 py-4 max-w-sm mx-auto">
+                        <div className="w-12 h-12 rounded-full bg-error/10 text-error flex items-center justify-center border border-error">
+                          <span className="material-symbols-outlined text-2xl">
+                            {qrStatus === "denied" ? "cancel" : "timer_off"}
+                          </span>
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-error text-sm">
+                            {qrStatus === "denied" ? "Challenge Denied" : "Challenge Expired"}
+                          </h3>
+                          <p className="text-xs text-text-secondary mt-1">
+                            {qrStatus === "denied"
+                              ? "The login request was denied by your mobile device. Tap below to generate a new QR code."
+                              : "This login challenge expired before being scanned. Tap below to generate a new QR code."}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={startQRChallenge}
+                          disabled={loading}
+                          className="mt-1 px-5 py-2.5 bg-primary text-on-primary text-xs font-bold uppercase tracking-wider border border-primary hover:bg-on-primary-fixed-variant disabled:opacity-50 cursor-pointer shadow-sm flex items-center gap-2"
+                        >
+                          <span className="material-symbols-outlined text-sm">refresh</span>
+                          {loading ? "Generating..." : "Regenerate Challenge"}
+                        </button>
+                      </div>
                     ) : qrImageData ? (
                       <div className="flex flex-col items-center gap-3">
                         <div className="border-4 border-primary p-2 bg-white shadow-sm">
@@ -501,9 +551,10 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
                         <button
                           type="button"
                           onClick={startQRChallenge}
-                          className="text-xs text-text-secondary hover:text-primary underline mt-1 cursor-pointer"
+                          disabled={loading}
+                          className="text-xs text-text-secondary hover:text-primary underline mt-1 cursor-pointer disabled:opacity-50"
                         >
-                          ↻ Refresh QR Challenge
+                          {loading ? "Generating..." : "↻ Regenerate Challenge"}
                         </button>
                       </div>
                     ) : null}
@@ -528,20 +579,53 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
                         <span className="material-symbols-outlined text-sm">check_circle</span>
                         Approved! Signing in...
                       </div>
+                    ) : pushStatus === "denied" || pushStatus === "expired" ? (
+                      <div className="flex flex-col items-center gap-3 py-2 max-w-sm mx-auto">
+                        <div className="w-12 h-12 rounded-full bg-error/10 text-error flex items-center justify-center border border-error">
+                          <span className="material-symbols-outlined text-2xl">
+                            {pushStatus === "denied" ? "cancel" : "timer_off"}
+                          </span>
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-error text-sm">
+                            {pushStatus === "denied" ? "Request Denied" : "Request Expired"}
+                          </h3>
+                          <p className="text-xs text-text-secondary mt-1">
+                            {pushStatus === "denied"
+                              ? "The login request was denied by your trusted device. Tap below to send a new prompt."
+                              : "The login challenge expired before being approved. Tap below to send a new prompt."}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={startPushChallenge}
+                          disabled={loading}
+                          className="mt-1 px-5 py-2.5 bg-primary text-on-primary text-xs font-bold uppercase tracking-wider border border-primary hover:bg-on-primary-fixed-variant disabled:opacity-50 cursor-pointer shadow-sm flex items-center gap-2"
+                        >
+                          <span className="material-symbols-outlined text-sm">refresh</span>
+                          {loading ? "Sending..." : "Resend Approval Prompt"}
+                        </button>
+                      </div>
+                    ) : pushStatus === "blocked" ? (
+                      <div className="p-3 bg-error/10 border border-error text-error text-xs font-bold max-w-sm">
+                        Too many failed denials. Device is temporarily locked.
+                      </div>
                     ) : (
-                      <div className="flex items-center gap-2 text-xs text-secondary font-bold uppercase tracking-wider animate-pulse">
-                        <span className="w-2.5 h-2.5 rounded-full bg-secondary" />
-                        Awaiting approval from your device...
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="flex items-center gap-2 text-xs text-secondary font-bold uppercase tracking-wider animate-pulse">
+                          <span className="w-2.5 h-2.5 rounded-full bg-secondary" />
+                          Awaiting approval on your registered trusted device...
+                        </div>
+                        <button
+                          type="button"
+                          onClick={startPushChallenge}
+                          disabled={loading}
+                          className="text-xs text-text-secondary hover:text-primary underline mt-1 cursor-pointer disabled:opacity-50"
+                        >
+                          ↻ Resend Approval Prompt
+                        </button>
                       </div>
                     )}
-
-                    <button
-                      type="button"
-                      onClick={startPushChallenge}
-                      className="text-xs text-text-secondary hover:text-primary underline mt-2 cursor-pointer"
-                    >
-                      ↻ Resend Approval Prompt
-                    </button>
                   </div>
                 )}
 
@@ -556,15 +640,51 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
                       </p>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={startBiometricAuthentication}
-                      disabled={loading}
-                      className="w-full max-w-xs mx-auto bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-sm"
-                    >
-                      <span className="material-symbols-outlined text-base">fingerprint</span>
-                      {loading ? "Waiting for Biometric Sensor..." : "Authenticate with Biometrics"}
-                    </button>
+                    {biometricStatus === "error" ? (
+                      <div className="flex flex-col items-center gap-3 py-2 max-w-sm mx-auto">
+                        <div className="w-12 h-12 rounded-full bg-error/10 text-error flex items-center justify-center border border-error">
+                          <span className="material-symbols-outlined text-2xl">error_outline</span>
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-error text-sm">Biometric Authentication Error</h3>
+                          <p className="text-xs text-text-secondary mt-1">
+                            {error || "Biometric authentication could not be started."}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <button
+                            type="button"
+                            onClick={() => startBiometricAuthentication()}
+                            disabled={loading}
+                            className="px-5 py-2.5 bg-primary text-on-primary text-xs font-bold uppercase tracking-wider border border-primary hover:bg-on-primary-fixed-variant disabled:opacity-50 cursor-pointer shadow-sm flex items-center gap-2"
+                          >
+                            <span className="material-symbols-outlined text-sm">refresh</span>
+                            {loading ? "Starting..." : "Try Again"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedMethod(null);
+                              setError("");
+                              setBiometricStatus("idle");
+                            }}
+                            className="px-4 py-2.5 border border-outline text-text-secondary hover:text-primary hover:border-primary text-xs font-bold uppercase tracking-wider transition-none cursor-pointer"
+                          >
+                            Choose Another Method
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => startBiometricAuthentication()}
+                        disabled={loading}
+                        className="w-full max-w-xs mx-auto bg-primary text-on-primary py-3.5 uppercase tracking-wider text-xs font-bold border border-primary hover:bg-on-primary-fixed-variant flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-sm"
+                      >
+                        <span className="material-symbols-outlined text-base">fingerprint</span>
+                        {loading ? "Waiting for Biometric Sensor..." : "Authenticate with Biometrics"}
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -575,6 +695,9 @@ export default function TwoFactorVerify({ onAuthSuccess }) {
                     onClick={() => {
                       setSelectedMethod(null);
                       setError("");
+                      setBiometricStatus("idle");
+                      setPushStatus("idle");
+                      setQrStatus("idle");
                       if (pushPollTimer.current) clearInterval(pushPollTimer.current);
                       if (qrPollTimer.current) clearInterval(qrPollTimer.current);
                     }}

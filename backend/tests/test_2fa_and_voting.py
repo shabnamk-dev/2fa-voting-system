@@ -773,3 +773,384 @@ def test_simultaneous_multi_method_enrollment_and_independent_logins(client):
     assert res_bio_auth_opt.get_json()["data"]["allowCredentials"][0]["id"] == bio_cred_id
 
 
+def test_trusted_device_full_flow_approval_and_denial(client):
+    """
+    Tests Bug 1 requirements:
+    1. Enrolling a trusted device establishes server-side credential (identifier & secret).
+    2. Computer A awaits approval, trusted device queries pending requests using credentials.
+    3. Invalid credentials fail to query or respond (security requirement).
+    4. Explicit approval on trusted device authenticates Computer A.
+    5. Explicit denial on trusted device rejects login and challenge is single-use.
+    """
+    # 1. Register voter in setup session
+    client.post("/api/register", json={"username": "push_voter", "password": "password123"})
+
+    # 2. Enroll Trusted Device
+    res_enroll = client.post("/api/2fa/push/enroll", json={"device_name": "MacBook Pro"})
+    assert res_enroll.status_code == 201
+    enroll_data = res_enroll.get_json()["data"]
+    dev_id = enroll_data["device_identifier"]
+    dev_sec = enroll_data["device_secret"]
+    assert dev_id.startswith("push_dev_")
+    assert len(dev_sec) >= 32
+
+    # Logout to simulate Computer A fresh login
+    client.post("/api/logout")
+
+    # 3. Security: Querying pending requests without credentials fails
+    res_unauth = client.get(f"/api/2fa/push/pending?device_identifier={dev_id}&device_secret=wrong_secret")
+    assert res_unauth.status_code == 403
+
+    # Valid credentials query returns empty when no request is pending
+    res_valid_empty = client.get(f"/api/2fa/push/pending?device_identifier={dev_id}&device_secret={dev_sec}")
+    assert res_valid_empty.status_code == 200
+    assert res_valid_empty.get_json()["data"] == []
+
+    # 4. Computer A starts login
+    res_login = client.post("/api/login", json={"username": "push_voter", "password": "password123"})
+    attempt_id = res_login.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "PUSH"})
+
+    res_push_req = client.post("/api/2fa/push/request", json={"attempt_id": attempt_id})
+    assert res_push_req.status_code == 200
+    push_req_id = res_push_req.get_json()["data"]["request_id"]
+
+    # Computer A polls: status is PENDING
+    res_poll1 = client.get(f"/api/2fa/push/status?request_id={push_req_id}")
+    assert res_poll1.get_json()["data"]["status"] == "PENDING"
+
+    # 5. Trusted Device sees the pending request
+    res_pending = client.get(f"/api/2fa/push/pending?device_identifier={dev_id}&device_secret={dev_sec}")
+    assert res_pending.status_code == 200
+    pending_items = res_pending.get_json()["data"]
+    assert len(pending_items) == 1
+    assert pending_items[0]["request_id"] == push_req_id
+
+    # 6. Security: Responding with invalid secret is rejected (403)
+    res_fake_app = client.post("/api/2fa/push/respond", json={
+        "request_id": push_req_id,
+        "action": "approve",
+        "device_identifier": dev_id,
+        "device_secret": "forged_secret",
+    })
+    assert res_fake_app.status_code == 403
+
+    # 7. Trusted Device approves request
+    res_app = client.post("/api/2fa/push/respond", json={
+        "request_id": push_req_id,
+        "action": "approve",
+        "device_identifier": dev_id,
+        "device_secret": dev_sec,
+    })
+    assert res_app.status_code == 200
+
+    # 8. Computer A polls and becomes authenticated
+    res_poll2 = client.get(f"/api/2fa/push/status?request_id={push_req_id}")
+    assert res_poll2.get_json()["data"]["status"] == "APPROVED"
+    assert client.get("/api/me").status_code == 200
+    assert client.get("/api/me").get_json()["data"]["username"] == "push_voter"
+
+    client.post("/api/logout")
+
+    # 9. Test Denial flow
+    res_l2 = client.post("/api/login", json={"username": "push_voter", "password": "password123"})
+    attempt_id2 = res_l2.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt_id2, "method": "PUSH"})
+    res_push_req2 = client.post("/api/2fa/push/request", json={"attempt_id": attempt_id2})
+    push_req_id2 = res_push_req2.get_json()["data"]["request_id"]
+
+    # Trusted Device denies request
+    res_deny = client.post("/api/2fa/push/respond", json={
+        "request_id": push_req_id2,
+        "action": "deny",
+        "device_identifier": dev_id,
+        "device_secret": dev_sec,
+    })
+    assert res_deny.status_code == 200
+
+    # Computer A polls and receives DENIED
+    res_poll_deny = client.get(f"/api/2fa/push/status?request_id={push_req_id2}")
+    assert res_poll_deny.get_json()["data"]["status"] == "DENIED"
+    assert client.get("/api/me").status_code == 401
+
+    # Challenge is consumed (cannot be reused)
+    res_reuse = client.post("/api/2fa/push/respond", json={
+        "request_id": push_req_id2,
+        "action": "approve",
+        "device_identifier": dev_id,
+        "device_secret": dev_sec,
+    })
+    assert res_reuse.status_code == 409
+
+
+def test_qr_challenge_denial_and_regeneration(client):
+    """
+    Tests Bug 2 requirements:
+    1. User requests QR challenge #1.
+    2. Mobile device denies challenge #1.
+    3. Challenge #1 is denied, but the attempt allows generating a new challenge.
+    4. User regenerates challenge: exactly one new challenge #2 is created.
+    5. Mobile device approves challenge #2.
+    6. Login succeeds normally.
+    7. Multiple manual regenerations each produce one new challenge cleanly.
+    """
+    # 1. Register voter and enroll QR device
+    client.post("/api/register", json={"username": "qr_regen_voter", "password": "password123"})
+    res_qr_req = client.post("/api/2fa/qr/enroll-request")
+    qr_token = res_qr_req.get_json()["data"]["token"]
+    res_qr_conf = client.post("/api/2fa/qr/enroll-confirm", json={"token": qr_token, "device_name": "iPhone 16"})
+    qr_dev_id = res_qr_conf.get_json()["data"]["device_identifier"]
+    qr_dev_sec = res_qr_conf.get_json()["data"]["device_secret"]
+
+    client.post("/api/logout")
+
+    # 2. Computer A initiates login
+    res_login = client.post("/api/login", json={"username": "qr_regen_voter", "password": "password123"})
+    attempt_id = res_login.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "QR"})
+
+    # 3. Request challenge #1
+    res_chal1 = client.post("/api/2fa/qr/request", json={"attempt_id": attempt_id})
+    assert res_chal1.status_code == 200
+    chal1_data = res_chal1.get_json()["data"]
+    req1_id = chal1_data["request_id"]
+
+    # 4. Mobile denies challenge #1
+    res_deny = client.post("/api/2fa/qr/respond", json={
+        "request_id": req1_id,
+        "challenge": chal1_data["challenge"],
+        "action": "deny",
+        "device_identifier": qr_dev_id,
+        "device_secret": qr_dev_sec,
+    })
+    assert res_deny.status_code == 200
+
+    # Computer A polls and sees DENIED
+    res_status1 = client.get(f"/api/2fa/qr/status?request_id={req1_id}")
+    assert res_status1.get_json()["data"]["status"] == "DENIED"
+
+    # Computer A is not authenticated
+    assert client.get("/api/me").status_code == 401
+
+    # 5. User clicks Regenerate Challenge ONCE -> Generates Challenge #2
+    res_chal2 = client.post("/api/2fa/qr/request", json={"attempt_id": attempt_id})
+    assert res_chal2.status_code == 200
+    chal2_data = res_chal2.get_json()["data"]
+    req2_id = chal2_data["request_id"]
+    assert req2_id != req1_id
+    assert chal2_data["status"] == "PENDING"
+
+    # Challenge #1 is now invalid / denied
+    res_try_chal1 = client.post("/api/2fa/qr/respond", json={
+        "request_id": req1_id,
+        "challenge": chal1_data["challenge"],
+        "action": "approve",
+        "device_identifier": qr_dev_id,
+        "device_secret": qr_dev_sec,
+    })
+    assert res_try_chal1.status_code in (409, 410)
+
+    # 6. Mobile approves challenge #2
+    res_app2 = client.post("/api/2fa/qr/respond", json={
+        "request_id": req2_id,
+        "challenge": chal2_data["challenge"],
+        "action": "approve",
+        "device_identifier": qr_dev_id,
+        "device_secret": qr_dev_sec,
+    })
+    assert res_app2.status_code == 200
+
+    # Computer A polls challenge #2 and authenticates
+    res_poll2 = client.get(f"/api/2fa/qr/status?request_id={req2_id}")
+    assert res_poll2.get_json()["data"]["status"] == "APPROVED"
+    assert client.get("/api/me").status_code == 200
+    assert client.get("/api/me").get_json()["data"]["username"] == "qr_regen_voter"
+
+    client.post("/api/logout")
+
+    # 7. Multiple manual regenerations test
+    res_l2 = client.post("/api/login", json={"username": "qr_regen_voter", "password": "password123"})
+    attempt2 = res_l2.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt2, "method": "QR"})
+
+    c1 = client.post("/api/2fa/qr/request", json={"attempt_id": attempt2}).get_json()["data"]["request_id"]
+    c2 = client.post("/api/2fa/qr/request", json={"attempt_id": attempt2}).get_json()["data"]["request_id"]
+    c3 = client.post("/api/2fa/qr/request", json={"attempt_id": attempt2}).get_json()["data"]["request_id"]
+
+    assert len({c1, c2, c3}) == 3  # Each click generated exactly one distinct challenge
+
+
+def test_trusted_device_five_denials_allowed_sixth_blocks(client):
+    """
+    Requirement 1 Test for Trusted Device:
+    Denials 1-5 allowed.
+    Denial 6 triggers lockout and blocks the device/attempt.
+    """
+    client.post("/api/register", json={"username": "push_lockout_user", "password": "password123"})
+    res_enr = client.post("/api/2fa/push/enroll", json={"device_name": "Primary Laptop"})
+    dev_id = res_enr.get_json()["data"]["device_identifier"]
+    dev_sec = res_enr.get_json()["data"]["device_secret"]
+    client.post("/api/logout")
+
+    # Start login
+    res_log = client.post("/api/login", json={"username": "push_lockout_user", "password": "password123"})
+    attempt_id = res_log.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "PUSH"})
+
+    # Perform 5 explicit denials
+    for i in range(1, 6):
+        res_req = client.post("/api/2fa/push/request", json={"attempt_id": attempt_id})
+        assert res_req.status_code == 200, f"Denial {i} request creation should succeed"
+        req_id = res_req.get_json()["data"]["request_id"]
+
+        res_deny = client.post("/api/2fa/push/respond", json={
+            "request_id": req_id,
+            "action": "deny",
+            "device_identifier": dev_id,
+            "device_secret": dev_sec,
+        })
+        assert res_deny.status_code == 200
+
+        res_status = client.get(f"/api/2fa/push/status?request_id={req_id}")
+        assert res_status.get_json()["data"]["status"] == "DENIED"
+
+    # 6th denial -> triggers lockout
+    res_req6 = client.post("/api/2fa/push/request", json={"attempt_id": attempt_id})
+    assert res_req6.status_code == 200
+    req6_id = res_req6.get_json()["data"]["request_id"]
+
+    res_deny6 = client.post("/api/2fa/push/respond", json={
+        "request_id": req6_id,
+        "action": "deny",
+        "device_identifier": dev_id,
+        "device_secret": dev_sec,
+    })
+    assert res_deny6.status_code == 200
+
+    res_status6 = client.get(f"/api/2fa/push/status?request_id={req6_id}")
+    assert res_status6.get_json()["data"]["status"] == "BLOCKED"
+
+    # Attempt is now failed, subsequent challenge requests are blocked
+    res_req7 = client.post("/api/2fa/push/request", json={"attempt_id": attempt_id})
+    assert res_req7.status_code in (400, 423)
+
+
+def test_qr_five_denials_allowed_sixth_blocks(client):
+    """
+    Requirement 1 Test for QR:
+    Denials 1-5 allowed.
+    Denial 6 triggers lockout and blocks the device/attempt.
+    """
+    client.post("/api/register", json={"username": "qr_lockout_user", "password": "password123"})
+    res_enr = client.post("/api/2fa/qr/enroll-request")
+    qr_token = res_enr.get_json()["data"]["token"]
+    res_conf = client.post("/api/2fa/qr/enroll-confirm", json={"token": qr_token, "device_name": "Mobile"})
+    qr_id = res_conf.get_json()["data"]["device_identifier"]
+    qr_sec = res_conf.get_json()["data"]["device_secret"]
+    client.post("/api/logout")
+
+    res_log = client.post("/api/login", json={"username": "qr_lockout_user", "password": "password123"})
+    attempt_id = res_log.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "QR"})
+
+    # Denials 1-5
+    for i in range(1, 6):
+        res_req = client.post("/api/2fa/qr/request", json={"attempt_id": attempt_id})
+        assert res_req.status_code == 200, f"QR challenge {i} should be allowed"
+        r_id = res_req.get_json()["data"]["request_id"]
+        c_code = res_req.get_json()["data"]["challenge"]
+
+        res_deny = client.post("/api/2fa/qr/respond", json={
+            "request_id": r_id,
+            "challenge": c_code,
+            "action": "deny",
+            "device_identifier": qr_id,
+            "device_secret": qr_sec,
+        })
+        assert res_deny.status_code == 200
+
+        res_status = client.get(f"/api/2fa/qr/status?request_id={r_id}")
+        assert res_status.get_json()["data"]["status"] == "DENIED"
+
+    # Denial 6 -> Blocked
+    res_req6 = client.post("/api/2fa/qr/request", json={"attempt_id": attempt_id})
+    assert res_req6.status_code == 200
+    r6_id = res_req6.get_json()["data"]["request_id"]
+    c6_code = res_req6.get_json()["data"]["challenge"]
+
+    res_deny6 = client.post("/api/2fa/qr/respond", json={
+        "request_id": r6_id,
+        "challenge": c6_code,
+        "action": "deny",
+        "device_identifier": qr_id,
+        "device_secret": qr_sec,
+    })
+    assert res_deny6.status_code == 200
+
+    res_status6 = client.get(f"/api/2fa/qr/status?request_id={r6_id}")
+    assert res_status6.get_json()["data"]["status"] == "BLOCKED"
+
+
+def test_multiple_trusted_devices_enrollment(client):
+    """
+    Requirement 5 Test:
+    User can enroll multiple trusted devices (e.g. PC, Phone, Laptop)
+    Each has its own unique secret and identifier.
+    Both devices can list and act on pending push challenges.
+    """
+    client.post("/api/register", json={"username": "multi_dev_user", "password": "password123"})
+    
+    # Enroll Device 1 (Windows PC)
+    d1_res = client.post("/api/2fa/push/enroll", json={"device_name": "Windows PC"})
+    d1 = d1_res.get_json()["data"]
+    assert d1["device_name"] == "Windows PC"
+    assert d1["device_identifier"].startswith("push_dev_")
+
+    # Enroll Device 2 (Android Phone)
+    d2_res = client.post("/api/2fa/push/enroll", json={"device_name": "Android Phone"})
+    d2 = d2_res.get_json()["data"]
+    assert d2["device_name"] == "Android Phone"
+    assert d2["device_identifier"] != d1["device_identifier"]
+    assert d2["device_secret"] != d1["device_secret"]
+
+    # List devices endpoint returns both
+    devs_res = client.get("/api/2fa/push/devices")
+    devs = devs_res.get_json()["data"]
+    dev_names = [x["device_name"] for x in devs]
+    assert "Windows PC" in dev_names
+    assert "Android Phone" in dev_names
+
+    client.post("/api/logout")
+
+    # Start login from Computer A
+    res_log = client.post("/api/login", json={"username": "multi_dev_user", "password": "password123"})
+    attempt_id = res_log.get_json()["data"]["attempt_id"]
+    client.post("/api/2fa/select", json={"attempt_id": attempt_id, "method": "PUSH"})
+    res_req = client.post("/api/2fa/push/request", json={"attempt_id": attempt_id})
+    req_id = res_req.get_json()["data"]["request_id"]
+
+    # Both devices can see the pending request
+    p1 = client.get(f"/api/2fa/push/pending?device_identifier={d1['device_identifier']}&device_secret={d1['device_secret']}")
+    assert len(p1.get_json()["data"]) == 1
+
+    p2 = client.get(f"/api/2fa/push/pending?device_identifier={d2['device_identifier']}&device_secret={d2['device_secret']}")
+    assert len(p2.get_json()["data"]) == 1
+
+    # Device 2 approves the request
+    app_res = client.post("/api/2fa/push/respond", json={
+        "request_id": req_id,
+        "action": "approve",
+        "device_identifier": d2["device_identifier"],
+        "device_secret": d2["device_secret"],
+    })
+    assert app_res.status_code == 200
+
+    # Polling on Computer A establishes session
+    res_status = client.get(f"/api/2fa/push/status?request_id={req_id}")
+    assert res_status.get_json()["data"]["status"] == "APPROVED"
+    assert client.get("/api/me").status_code == 200
+    assert client.get("/api/me").get_json()["data"]["username"] == "multi_dev_user"
+
+
+
+

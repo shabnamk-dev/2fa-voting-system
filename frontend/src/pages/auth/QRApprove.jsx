@@ -156,7 +156,7 @@ export default function QRApprove() {
               <div>
                 <h2 className="font-headline-md text-error font-bold">Login Denied</h2>
                 <p className="text-sm text-text-secondary mt-1">
-                  The login request was denied and the computer session blocked.
+                  The login request was denied.
                 </p>
               </div>
             </div>

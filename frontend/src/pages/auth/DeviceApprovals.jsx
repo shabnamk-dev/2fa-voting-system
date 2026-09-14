@@ -36,10 +36,11 @@ export default function DeviceApprovals() {
 
   const fetchPending = useCallback(async () => {
     const currentDevId = deviceId || localStorage.getItem("voting_trusted_device_id");
+    const currentDevSecret = localStorage.getItem("voting_trusted_device_secret");
     if (!currentDevId && !currentUser) return;
 
     try {
-      const res = await getPendingPushRequests(currentDevId || null);
+      const res = await getPendingPushRequests(currentDevId || null, currentDevSecret || null);
       const list = res.data?.data || [];
       setPendingRequests(list);
     } catch (_err) {
